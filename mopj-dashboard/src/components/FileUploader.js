@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, AlertTriangle } from 'lucide-react';
-import { uploadCSV, getAvailableDates, getFileMetadata } from '../services/api';
+import { uploadCSV, getAvailableDates } from '../services/api';
 
 const styles = {
   container: (dragActive) => ({
