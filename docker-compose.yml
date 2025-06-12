@@ -1,0 +1,74 @@
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mopj-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - backend_models:/app/models
+      - backend_static:/app/static
+      - backend_uploads:/app/uploads
+      - backend_cache:/app/cache
+      - backend_predictions:/app/predictions
+      - backend_holidays:/app/holidays
+      - backend_temp:/app/temp
+      - backend_logs:/app/logs
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+      - ENABLE_LSTM=true
+      - ENABLE_VARMAX=true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+
+  frontend:
+    build: 
+      context: ./mopj-dashboard
+      dockerfile: Dockerfile
+    container_name: mopj-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        condition: service_started
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:80"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+volumes:
+  backend_models:
+    driver: local
+  backend_static:
+    driver: local
+  backend_uploads:
+    driver: local
+  backend_cache:
+    driver: local
+  backend_predictions:
+    driver: local
+  backend_holidays:
+    driver: local
+  backend_temp:
+    driver: local
+  backend_logs:
+    driver: local
