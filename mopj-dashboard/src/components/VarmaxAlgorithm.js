@@ -1,5 +1,5 @@
 import React from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+// VarmaxAlgorithm은 테이블 기반으로 차트 컴포넌트가 필요하지 않음
 
 const styles = {
   chartContainer: {
