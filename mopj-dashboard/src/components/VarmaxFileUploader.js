@@ -65,11 +65,6 @@ const VarmaxFileUploader = ({
 
   // 브라우저 기본 드래그앤드롭 동작 방지 (FileUploader와 중복 방지를 위해 조건부)
   useEffect(() => {
-    const preventDefaults = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-
     // VarmaxFileUploader가 마운트될 때만 추가적인 보호
     const handleDocumentDrop = (e) => {
       if (!e.target.closest('[data-file-uploader]')) {
