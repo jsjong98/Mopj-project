@@ -344,22 +344,15 @@ def check_data_extension(old_file_path, new_file_path):
                 'validation_details': {'reason': 'New file is not longer than old file'}
             }
         
-        # ✅ 검증 2: 새 데이터의 시작 날짜가 기존 데이터의 시작 날짜와 같거나 그 이후여야 함
-        if new_start_date < old_start_date:
-            logger.info(f"❌ [EXTENSION_CHECK] New data starts before old data ({new_start_date} < {old_start_date})")
-            return {
-                'is_extension': False,
-                'new_rows_count': 0,
-                'old_start_date': old_start_date.strftime('%Y-%m-%d'),
-                'old_end_date': old_end_date.strftime('%Y-%m-%d'),
-                'new_start_date': new_start_date.strftime('%Y-%m-%d'),
-                'new_end_date': new_end_date.strftime('%Y-%m-%d'),
-                'validation_details': {'reason': 'New data contains dates before existing data start date'}
-            }
+        # ✅ 검증 2: 새 파일이 더 길거나 최소한 같은 길이여야 함 (과거 데이터 허용)
+        # 과거 데이터가 포함된 경우도 허용하도록 변경
+        logger.info(f"📅 [EXTENSION_CHECK] Date ranges - Old: {old_start_date} ~ {old_end_date}, New: {new_start_date} ~ {new_end_date}")
         
-        # ✅ 검증 3: 새 데이터의 마지막 날짜가 기존 데이터의 마지막 날짜 이후여야 함
-        if new_end_date <= old_end_date:
-            logger.info(f"❌ [EXTENSION_CHECK] New data doesn't extend beyond old data ({new_end_date} <= {old_end_date})")
+        # ✅ 검증 3: 새 데이터가 기존 데이터보다 더 많은 정보를 포함해야 함 (완화된 조건)
+        # 과거 데이터 확장 또는 미래 데이터 확장 둘 다 허용
+        has_more_data = (new_start_date < old_start_date) or (new_end_date > old_end_date) or (len(new_df) > len(old_df))
+        if not has_more_data:
+            logger.info(f"❌ [EXTENSION_CHECK] New data doesn't provide additional information")
             return {
                 'is_extension': False,
                 'new_rows_count': 0,
@@ -367,7 +360,7 @@ def check_data_extension(old_file_path, new_file_path):
                 'old_end_date': old_end_date.strftime('%Y-%m-%d'),
                 'new_start_date': new_start_date.strftime('%Y-%m-%d'),
                 'new_end_date': new_end_date.strftime('%Y-%m-%d'),
-                'validation_details': {'reason': 'New data does not extend beyond existing end date'}
+                'validation_details': {'reason': 'New data does not provide additional information beyond existing data'}
             }
         
         # ✅ 검증 4: 기존 데이터의 모든 날짜가 새 데이터에 포함되어야 함
@@ -460,29 +453,25 @@ def check_data_extension(old_file_path, new_file_path):
                 'validation_details': {'reason': 'Data content differs', 'details': mismatch_details}
             }
         
-        # ✅ 검증 7: 새로 추가된 데이터가 기존 데이터의 마지막 날짜 이후에만 있는지 확인
+        # ✅ 검증 7: 새로 추가된 데이터 분석 (과거/미래 데이터 모두 허용)
         new_only_dates = new_dates - old_dates
-        if new_only_dates:
-            new_only_dates_dt = [pd.to_datetime(date) for date in new_only_dates]
-            earliest_new_date = min(new_only_dates_dt)
-            
-            if earliest_new_date <= old_end_date:
-                logger.info(f"❌ [EXTENSION_CHECK] New dates are not strictly after old end date: {earliest_new_date} <= {old_end_date}")
-                return {
-                    'is_extension': False,
-                    'new_rows_count': 0,
-                    'old_start_date': old_start_date.strftime('%Y-%m-%d'),
-                    'old_end_date': old_end_date.strftime('%Y-%m-%d'),
-                    'new_start_date': new_start_date.strftime('%Y-%m-%d'),
-                    'new_end_date': new_end_date.strftime('%Y-%m-%d'),
-                    'validation_details': {'reason': 'New dates are not strictly sequential after old end date'}
-                }
         
-        # ✅ 모든 검증 통과: 순차적 확장으로 인정
+        # 확장 유형 분석
+        extension_type = []
+        if new_start_date < old_start_date:
+            past_dates = len([d for d in new_only_dates if pd.to_datetime(d) < old_start_date])
+            extension_type.append(f"과거 데이터 {past_dates}개 추가")
+        if new_end_date > old_end_date:
+            future_dates = len([d for d in new_only_dates if pd.to_datetime(d) > old_end_date])
+            extension_type.append(f"미래 데이터 {future_dates}개 추가")
+        
+        extension_desc = " + ".join(extension_type) if extension_type else "데이터 보완"
+        
+        # ✅ 모든 검증 통과: 데이터 확장으로 인정 (과거/미래 모두 허용)
         new_rows_count = len(new_only_dates)
         base_hash = get_data_content_hash(old_file_path)
         
-        logger.info(f"✅ [EXTENSION_CHECK] Valid sequential extension: +{new_rows_count} new dates after {old_end_date.strftime('%Y-%m-%d')}")
+        logger.info(f"✅ [EXTENSION_CHECK] Valid data extension: {extension_desc} (+{new_rows_count} new dates)")
         
         return {
             'is_extension': True,
@@ -493,8 +482,9 @@ def check_data_extension(old_file_path, new_file_path):
             'new_start_date': new_start_date.strftime('%Y-%m-%d'),
             'new_end_date': new_end_date.strftime('%Y-%m-%d'),
             'validation_details': {
-                'reason': 'Valid sequential extension',
-                'new_dates_added': sorted(list(new_only_dates))
+                'reason': f'Valid data extension: {extension_desc}',
+                'new_dates_added': sorted(list(new_only_dates)),
+                'extension_type': extension_type
             }
         }
         
@@ -2904,156 +2894,119 @@ def calculate_prediction_consistency(accumulated_predictions, target_period):
 # 누적 예측의 구매 신뢰도 계산 함수 (올바른 버전)
 def calculate_accumulated_purchase_reliability(accumulated_predictions):
     """
-    누적 예측의 구매 신뢰도 계산
-    각 예측에서 얻은 최고 점수의 합 / (예측 횟수 × 3점)
+    누적 예측의 구매 신뢰도 계산 (올바른 방식)
     
-    - 각 예측 날짜마다 최대 3점을 받을 수 있음
-    - 전체 최대 점수 = 예측 횟수 × 3점
-    - 구매 신뢰도 = 총 획득 점수 / 전체 최대 점수 × 100%
+    각 예측마다 상위 3개 구간(1등:3점, 2등:2점, 3등:1점)을 선정하고,
+    같은 구간이 여러 예측에서 선택되면 점수를 누적하여,
+    최고 누적 점수 구간의 점수 / (예측 횟수 × 3점) × 100%로 계산
+    
+    Returns:
+        tuple: (reliability_percentage, debug_info)
     """
     print(f"🔍 [RELIABILITY] Function called with {len(accumulated_predictions) if accumulated_predictions else 0} predictions")
     
     if not accumulated_predictions or not isinstance(accumulated_predictions, list):
         print(f"⚠️ [RELIABILITY] Invalid input: accumulated_predictions is empty or not a list")
-        return 0.0
+        return 0.0, {}
     
     try:
-        total_best_score = 0
         prediction_count = len(accumulated_predictions)
         print(f"📊 [RELIABILITY] Processing {prediction_count} predictions...")
         
+        # 🔑 구간별 누적 점수를 저장할 딕셔너리
+        interval_accumulated_scores = {}
+        
         for i, pred in enumerate(accumulated_predictions):
             if not isinstance(pred, dict):
                 continue
                 
             interval_scores = pred.get('interval_scores', {})
-            
-            if interval_scores and isinstance(interval_scores, dict):
-                # 유효한 interval score 찾기
-                valid_scores = []
-                for score_data in interval_scores.values():
-                    if isinstance(score_data, dict) and 'score' in score_data:
-                        score_value = score_data.get('score', 0)
-                        if isinstance(score_value, (int, float)):
-                            valid_scores.append(score_value)
-                
-                if valid_scores:
-                    # 유효한 점수들과 해당 구간 정보 분석
-                    score_details = []
-                    for score_key, score_data in interval_scores.items():
-                        if isinstance(score_data, dict) and 'score' in score_data:
-                            score_value = score_data.get('score', 0)
-                            if isinstance(score_value, (int, float)):
-                                interval_info = f"{score_data.get('start_date')} ~ {score_data.get('end_date')} ({score_data.get('days')}일)"
-                                score_details.append({
-                                    'interval': interval_info,
-                                    'score': score_value
-                                })
-                    
-                    best_score = max(valid_scores)
-                    # 최고 점수를 받은 구간 정보 찾기
-                    best_interval_info = "정보없음"
-                    for detail in score_details:
-                        if detail['score'] == best_score:
-                            best_interval_info = detail['interval']
-                            break
-                    
-                    # ⚠️ 점수 제한 제거: 실제 획득한 점수를 그대로 사용
-                    # 예: 최고 점수가 2점이면 2점, 3점이면 3점, 1점이면 1점
-                    total_best_score += best_score
-                    
-                    print(f"📊 [RELIABILITY] 날짜 {pred.get('date')}: 최고구간={best_interval_info}, 점수={best_score:.1f}")
-                    print(f"   - 모든 구간: {score_details}")
-                    
-                    logger.info(f"📊 날짜 {pred.get('date')}: 최고구간={best_interval_info}, 점수={best_score:.1f}")
-                    logger.info(f"📊 날짜 {pred.get('date')}: 모든구간={score_details}")
-        
-        # 전체 누적 구매 신뢰도 = 총 획득 점수 / (예측 횟수 × 3점)
-        max_possible_total_score = prediction_count * 3
-        
-        if max_possible_total_score > 0:
-            reliability_percentage = (total_best_score / max_possible_total_score) * 100
-        else:
-            reliability_percentage = 0.0
-        
-        # ✅ 구간 일관성 분석 추가
-        interval_count = {}  # 각 구간이 최고 점수로 선택된 횟수
-        
-        # 다시 한번 각 예측을 돌면서 최고 점수 구간 수집
-        for i, pred in enumerate(accumulated_predictions):
-            if not isinstance(pred, dict):
-                continue
-                
             pred_date = pred.get('date')
-            interval_scores = pred.get('interval_scores', {})
             
             if interval_scores and isinstance(interval_scores, dict):
-                # 유효한 interval score 찾기
-                valid_scores = []
-                for score_key, score_data in interval_scores.items():
-                    if isinstance(score_data, dict) and 'score' in score_data:
-                        score_value = score_data.get('score', 0)
-                        if isinstance(score_value, (int, float)):
-                            valid_scores.append(score_value)
+                # 모든 구간을 평균 가격 순으로 정렬 (가격이 낮을수록 좋음)
+                valid_intervals = []
+                for score_data in interval_scores.values():
+                    if isinstance(score_data, dict) and 'avg_price' in score_data:
+                        valid_intervals.append(score_data)
                 
-                if valid_scores:
-                    best_score = max(valid_scores)
+                if valid_intervals:
+                    # 평균 가격 기준으로 정렬 (낮은 가격이 우선)
+                    valid_intervals.sort(key=lambda x: x.get('avg_price', float('inf')))
                     
-                    # 최고 점수를 받은 구간들 찾기
-                    for score_key, score_data in interval_scores.items():
-                        if isinstance(score_data, dict) and score_data.get('score') == best_score:
-                            interval_key = f"{score_data.get('start_date')} ~ {score_data.get('end_date')} ({score_data.get('days')}일)"
-                            if interval_key not in interval_count:
-                                interval_count[interval_key] = []
-                            interval_count[interval_key].append(pred_date)
-                            break  # 첫 번째 최고 점수 구간만 선택
+                    # 상위 3개 구간에 점수 부여
+                    for rank, interval in enumerate(valid_intervals[:3]):
+                        score = 3 - rank  # 1등: 3점, 2등: 2점, 3등: 1점
+                        
+                        # 구간 식별키 생성 (시작일-종료일)
+                        interval_key = f"{interval.get('start_date')} ~ {interval.get('end_date')} ({interval.get('days')}일)"
+                        
+                        # 누적 점수 계산
+                        if interval_key not in interval_accumulated_scores:
+                            interval_accumulated_scores[interval_key] = {
+                                'total_score': 0,
+                                'appearances': 0,
+                                'details': [],
+                                'avg_price': interval.get('avg_price', 0),
+                                'days': interval.get('days', 0)
+                            }
+                        
+                        interval_accumulated_scores[interval_key]['total_score'] += score
+                        interval_accumulated_scores[interval_key]['appearances'] += 1
+                        interval_accumulated_scores[interval_key]['details'].append({
+                            'date': pred_date,
+                            'rank': rank + 1,
+                            'score': score,
+                            'avg_price': interval.get('avg_price', 0)
+                        })
+                        
+                        print(f"📊 [RELIABILITY] 날짜 {pred_date}: {rank+1}등 {interval_key} → {score}점 (평균가: {interval.get('avg_price', 0):.2f})")
         
-        # 구간 일관성 분석
-        if interval_count:
-            most_common_interval = max(interval_count, key=lambda k: len(interval_count[k]))
-            max_count = len(interval_count[most_common_interval])
-            consistency_percentage = (max_count / prediction_count * 100) if prediction_count > 0 else 0
+        # 최고 누적 점수 구간 찾기
+        if interval_accumulated_scores:
+            best_interval_key = max(interval_accumulated_scores.keys(), 
+                                  key=lambda k: interval_accumulated_scores[k]['total_score'])
+            best_total_score = interval_accumulated_scores[best_interval_key]['total_score']
             
-            print(f"\n🎯 [RELIABILITY] === 구간 일관성 분석 ===")
+            # 만점 계산 (각 예측마다 최대 3점씩)
+            max_possible_total_score = prediction_count * 3
+            
+            # 구매 신뢰도 계산
+            reliability_percentage = (best_total_score / max_possible_total_score) * 100 if max_possible_total_score > 0 else 0.0
+            
+            print(f"\n🎯 [RELIABILITY] === 구간별 누적 점수 분석 ===")
             print(f"📊 예측 횟수: {prediction_count}개")
-            print(f"📊 구간별 선택 횟수:")
+            print(f"📊 구간별 누적 점수:")
             
-            for interval, dates in sorted(interval_count.items(), key=lambda x: len(x[1]), reverse=True):
-                count = len(dates)
-                percentage = (count / prediction_count * 100) if prediction_count > 0 else 0
-                print(f"   - {interval}: {count}회 ({percentage:.1f}%) - 날짜: {', '.join(dates)}")
-                logger.info(f"🎯 구간 선택: {interval} - {count}회 ({percentage:.1f}%)")
+            # 누적 점수 순으로 정렬하여 표시
+            sorted_intervals = sorted(interval_accumulated_scores.items(), 
+                                    key=lambda x: x[1]['total_score'], reverse=True)
             
-            print(f"\n🏆 가장 일관된 구간: {most_common_interval}")
-            print(f"🏆 구간 일관성: {max_count}/{prediction_count} = {consistency_percentage:.1f}%")
+            for interval_key, data in sorted_intervals[:5]:  # 상위 5개만 표시
+                print(f"   - {interval_key}: {data['total_score']}점 ({data['appearances']}회 선택)")
             
-            logger.info(f"💰 [RELIABILITY] 최종 분석:")
-            logger.info(f"   - 수정된 계산식: {reliability_percentage:.1f}%")
-            logger.info(f"   - 구간 일관성: {consistency_percentage:.1f}%")
-            logger.info(f"   - 가장 일관된 구간: {most_common_interval}")
-        
-        print(f"\n💰 수정된 구매 신뢰도 계산:")
-        print(f"   - 총 획득 점수: {total_best_score:.1f}점")
-        print(f"   - 최대 가능 점수: {max_possible_total_score}점")
-        print(f"   - 구매 신뢰도: {reliability_percentage:.1f}%")
-        
-        logger.info(f"🎯 올바른 구매 신뢰도 계산:")
-        logger.info(f"  - 예측 횟수: {prediction_count}개")
-        logger.info(f"  - 총 획득 점수: {total_best_score:.1f}점")
-        logger.info(f"  - 최대 가능 점수: {max_possible_total_score}점 ({prediction_count} × 3)")
-        logger.info(f"  - 구매 신뢰도: {reliability_percentage:.1f}%")
-        
-        # ✅ 추가 검증 로깅
-        if reliability_percentage == 100.0:
-            logger.warning("⚠️ [SIMPLE_RELIABILITY] 구매 신뢰도가 100%입니다. 각 예측별 점수 확인 필요")
-        elif reliability_percentage == 0.0:
-            logger.warning("⚠️ [SIMPLE_RELIABILITY] 구매 신뢰도가 0%입니다. 점수 데이터 확인 필요")
-        
-        return reliability_percentage
+            print(f"\n🏆 최고 점수 구간: {best_interval_key}")
+            print(f"🏆 최고 누적 점수: {best_total_score}점")
+            print(f"🏆 구간 신뢰도: {best_total_score}/{max_possible_total_score} = {reliability_percentage:.1f}%")
+            
+            # 디버그 정보 생성
+            debug_info = {
+                'prediction_count': prediction_count,
+                'interval_accumulated_scores': interval_accumulated_scores,
+                'best_interval_key': best_interval_key,
+                'best_total_score': best_total_score,
+                'max_possible_total_score': max_possible_total_score,
+                'reliability_percentage': reliability_percentage
+            }
+            
+            return reliability_percentage, debug_info
+        else:
+            print(f"⚠️ [RELIABILITY] No valid interval scores found")
+            return 0.0, {}
             
     except Exception as e:
-        logger.error(f"Error calculating accumulated purchase reliability: {str(e)}")
-        return 0.0
+        print(f"Error calculating accumulated purchase reliability: {str(e)}")
+        return 0.0, {'error': str(e)} 
 
 def calculate_accumulated_purchase_reliability_with_debug(accumulated_predictions):
     """
@@ -3094,13 +3047,14 @@ def calculate_accumulated_purchase_reliability_with_debug(accumulated_prediction
                 
                 if valid_scores:
                     best_score = max(valid_scores)
-                    # ⚠️ 점수 제한 제거: 실제 획득한 점수를 그대로 사용
-                    total_best_score += best_score
+                    # 점수를 3점으로 제한 (각 예측의 최대 점수)
+                    capped_score = min(best_score, 3.0)
+                    total_best_score += capped_score
             
             debug_info['individual_scores'].append({
                 'date': pred_date,
                 'original_best_score': best_score,
-                'actual_score_used': best_score,
+                'actual_score_used': capped_score if valid_scores else 0,
                 'max_score_per_prediction': 3,
                 'has_valid_scores': len(valid_scores) > 0
             })
@@ -3118,7 +3072,9 @@ def calculate_accumulated_purchase_reliability_with_debug(accumulated_prediction
         
         # 🔍 개별 점수 디버깅 정보 출력
         for score_info in debug_info['individual_scores']:
-            logger.info(f"📊 날짜 {score_info['date']}: 원본점수={score_info['original_best_score']}, 적용점수={score_info['actual_score_used']}, 유효점수있음={score_info['has_valid_scores']}")
+            original = score_info.get('original_best_score', 0)
+            actual = score_info.get('actual_score_used', 0)
+            logger.info(f"📊 날짜 {score_info['date']}: 원본점수={original:.1f}, 적용점수={actual:.1f}, 유효점수있음={score_info['has_valid_scores']}")
         
         logger.info(f"  - 총 획득 점수: {total_best_score:.1f}점")
         logger.info(f"  - 최대 가능 점수: {max_possible_total_score}점 ({prediction_count} × 3)")
@@ -3841,7 +3797,7 @@ def calculate_direction_accuracy(actual, predicted):
     """등락 방향 예측의 정확도 계산"""
     if len(actual) <= 1:
         return 0.0
-        
+
     try:
         actual_directions = np.sign(np.diff(actual))
         predicted_directions = np.sign(np.diff(predicted))
@@ -4259,7 +4215,7 @@ def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, 
         ]
         accumulated_scores_list.sort(key=lambda x: x['score'], reverse=True)
 
-        accumulated_purchase_reliability, debug_info = calculate_accumulated_purchase_reliability_with_debug(all_predictions)
+        accumulated_purchase_reliability, debug_info = calculate_accumulated_purchase_reliability(all_predictions)
         
         # ✅ 캐시 활용률 계산
         cache_statistics['cache_hit_rate'] = (cache_statistics['cached_dates'] / cache_statistics['total_dates'] * 100) if cache_statistics['total_dates'] > 0 else 0.0
@@ -4667,8 +4623,18 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
         if not all_business_days:
             raise ValueError(f"No future business days found after {current_date}")
 
-        # ✅ 핵심 수정: 날짜별로 다른 학습 데이터 사용 보장
-        historical_data = df[df.index <= current_date].copy()
+        # ✅ 핵심 수정: LSTM 단기 예측을 위해 2022년 이후 데이터만 사용
+        cutoff_date_2022 = pd.to_datetime('2022-01-01')
+        available_data = df[df.index <= current_date].copy()
+        
+        # 2022년 이후 데이터가 충분한 경우 해당 기간만 사용 (단기 예측 정확도 향상)
+        recent_data = available_data[available_data.index >= cutoff_date_2022]
+        if len(recent_data) >= 50:
+            historical_data = recent_data.copy()
+            logger.info(f"  🎯 Using recent data for LSTM: 2022+ ({len(historical_data)} records)")
+        else:
+            historical_data = available_data.copy()
+            logger.info(f"  📊 Using full available data: insufficient recent data ({len(recent_data)} < 50)")
         
         logger.info(f"  📊 Training data: {len(historical_data)} records up to {format_date(current_date)}")
         logger.info(f"  📊 Training data range: {format_date(historical_data.index.min())} ~ {format_date(historical_data.index.max())}")
@@ -6841,7 +6807,38 @@ def upload_file():
             file.save(temp_filepath)
             logger.info(f"📤 [UPLOAD] File saved temporarily: {temp_filename}")
             
-            # 🔍 캐시 호환성 확인
+            # 📊 데이터 분석 - 날짜 범위 확인
+            try:
+                df_analysis = pd.read_csv(temp_filepath)
+                if 'Date' in df_analysis.columns:
+                    df_analysis['Date'] = pd.to_datetime(df_analysis['Date'])
+                    start_date = df_analysis['Date'].min()
+                    end_date = df_analysis['Date'].max()
+                    total_records = len(df_analysis)
+                    
+                    # 2022년 이후 데이터 확인
+                    cutoff_2022 = pd.to_datetime('2022-01-01')
+                    recent_data = df_analysis[df_analysis['Date'] >= cutoff_2022]
+                    recent_records = len(recent_data)
+                    
+                    logger.info(f"📊 [DATA_ANALYSIS] Full range: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({total_records} records)")
+                    logger.info(f"📊 [DATA_ANALYSIS] 2022+ range: {recent_records} records")
+                    
+                    data_info = {
+                        'start_date': start_date.strftime('%Y-%m-%d'),
+                        'end_date': end_date.strftime('%Y-%m-%d'),
+                        'total_records': total_records,
+                        'recent_records_2022plus': recent_records,
+                        'has_historical_data': start_date < cutoff_2022,
+                        'lstm_recommended_cutoff': '2022-01-01'
+                    }
+                else:
+                    data_info = {'warning': 'No Date column found'}
+            except Exception as e:
+                logger.warning(f"Data analysis failed: {str(e)}")
+                data_info = {'warning': f'Data analysis failed: {str(e)}'}
+            
+            # 🔍 캐시 호환성 확인 (완화된 검증)
             cache_result = find_compatible_cache_file(temp_filepath)
             
             response_data = {
@@ -6849,6 +6846,11 @@ def upload_file():
                 'filepath': temp_filepath,
                 'filename': temp_filename,
                 'original_filename': original_filename,
+                'data_info': data_info,
+                'model_recommendations': {
+                    'varmax': '전체 데이터 사용 권장 (장기 트렌드 분석)',
+                    'lstm': '2022년 이후 데이터 사용 권장 (단기 정확도 향상)'
+                },
                 'cache_info': {
                     'found': cache_result['found'],
                     'cache_type': cache_result.get('cache_type'),
@@ -6895,7 +6897,7 @@ def upload_file():
                     
                 response_data['filepath'] = final_filepath
                 response_data['filename'] = final_filename
-                response_data['cache_info']['message'] = "새로운 데이터입니다. 예측 후 캐시로 저장됩니다."
+                response_data['cache_info']['message'] = "새로운 데이터입니다. 모델별로 적절한 데이터 범위를 사용하여 예측합니다."
             
             # 🔑 업로드된 파일 경로를 전역 상태에 저장
             prediction_state['current_file'] = response_data['filepath']
@@ -7705,7 +7707,7 @@ def get_accumulated_results():
     logger.info("✅ [ACCUMULATED] Processing accumulated predictions...")
     
     # 누적 구매 신뢰도 계산 - 올바른 방식 사용
-    accumulated_purchase_reliability = calculate_accumulated_purchase_reliability(
+    accumulated_purchase_reliability, _ = calculate_accumulated_purchase_reliability(
         prediction_state['accumulated_predictions']
     )
     
@@ -8117,9 +8119,12 @@ def debug_reliability_calculation():
         
         if pred_detail['individual_scores']:
             best_score = max([s['score'] for s in pred_detail['individual_scores']])
+            # 점수를 3점으로 제한
+            capped_score = min(best_score, 3.0)
             pred_detail['best_score'] = best_score
-            total_score += best_score
-            print(f"   - Best score: {best_score}")
+            pred_detail['capped_score'] = capped_score
+            total_score += capped_score
+            print(f"   - Best score: {best_score:.1f}, Capped score: {capped_score:.1f}")
         
         debug_data['predictions_details'].append(pred_detail)
     
@@ -8302,7 +8307,7 @@ def get_recent_accumulated_results():
         accumulated_scores_list.sort(key=lambda x: x['score'], reverse=True)
         
         # 구매 신뢰도 계산
-        accumulated_purchase_reliability = calculate_accumulated_purchase_reliability(loaded_predictions)
+        accumulated_purchase_reliability, _ = calculate_accumulated_purchase_reliability(loaded_predictions)
         
         # 일관성 점수 계산
         unique_periods = set()
