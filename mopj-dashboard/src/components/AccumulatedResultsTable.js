@@ -1,6 +1,30 @@
 import React from 'react';
 import { Calendar, TrendingUp, TrendingDown, Minus, DollarSign } from 'lucide-react';
 
+// 통일된 타이포그래피 시스템
+const typography = {
+  cardTitle: {
+    fontSize: '1.125rem',
+    fontWeight: '600',
+    lineHeight: '1.4'
+  },
+  content: {
+    fontSize: '1rem',
+    fontWeight: '400',
+    lineHeight: '1.6'
+  },
+  helper: {
+    fontSize: '0.875rem',
+    fontWeight: '400',
+    lineHeight: '1.5'
+  },
+  small: {
+    fontSize: '0.75rem',
+    fontWeight: '400',
+    lineHeight: '1.4'
+  }
+};
+
 const styles = {
   container: {
     maxHeight: '16rem',
@@ -15,12 +39,13 @@ const styles = {
     borderRadius: '0.375rem'
   },
   noDataText: {
-    color: '#6b7280'
+    color: '#6b7280',
+    ...typography.helper
   },
   table: {
     width: '100%',
     borderCollapse: 'collapse',
-    fontSize: '0.875rem'
+    ...typography.helper
   },
   tableHeader: {
     position: 'sticky',
@@ -33,12 +58,14 @@ const styles = {
     textAlign: 'left',
     fontWeight: '500',
     color: '#6b7280',
-    borderBottom: '1px solid #e5e7eb'
+    borderBottom: '1px solid #e5e7eb',
+    ...typography.small
   },
   td: {
     padding: '0.5rem 1rem',
     borderBottom: '1px solid #e5e7eb',
-    color: '#4b5563'
+    color: '#4b5563',
+    ...typography.helper
   },
   date: {
     display: 'flex',
@@ -77,16 +104,24 @@ const styles = {
   },
   buttonContainer: {
     display: 'flex',
-    gap: '0.5rem'
+    gap: '0.5rem',
+    flexDirection: 'column'
   },
   viewButton: {
     backgroundColor: '#3b82f6',
     color: 'white',
     border: 'none',
-    padding: '0.25rem 0.5rem',
+    padding: '0.375rem 0.5rem',
     borderRadius: '0.25rem',
-    fontSize: '0.75rem',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    whiteSpace: 'normal',
+    textAlign: 'center',
+    lineHeight: '1.2',
+    minHeight: '2rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...typography.small
   }
 };
 
@@ -220,10 +255,10 @@ const AccumulatedResultsTable = ({ data, currentDate, onSelectDate, onViewInSing
                   <div style={styles.date}>
                     <Calendar size={14} style={styles.dateIcon} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                      <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
+                      <div style={{ ...typography.helper, fontWeight: '500' }}>
                         📊 데이터 기준일: {item.date}
                       </div>
-                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                      <div style={{ ...typography.small, color: '#6b7280' }}>
                         🚀 예측 시작일: {predictionStartDate}
                       </div>
                     </div>
