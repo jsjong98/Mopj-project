@@ -1,7 +1,6 @@
 // src/components/VarmaxModelInfo.js
 import React from 'react';
-import { Zap, TrendingUp, BarChart3, Users } from 'lucide-react';
-import { CheckCircle, AlertCircle, XCircle } from 'lucide-react';
+import { Zap, TrendingUp, Users } from 'lucide-react';
 
 // 통일된 타이포그래피 시스템
 const typography = {
