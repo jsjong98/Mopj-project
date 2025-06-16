@@ -2,6 +2,20 @@
 import React from 'react';
 import { DollarSign } from 'lucide-react';
 
+// 통일된 타이포그래피 시스템
+const typography = {
+  helper: {
+    fontSize: '0.875rem',
+    fontWeight: '400',
+    lineHeight: '1.5'
+  },
+  small: {
+    fontSize: '0.75rem',
+    fontWeight: '400',
+    lineHeight: '1.4'
+  }
+};
+
 const styles = {
   // IntervalScoresTable과 동일한 스타일 사용
   container: {
@@ -16,7 +30,8 @@ const styles = {
     borderRadius: '0.375rem'
   },
   noDataText: {
-    color: '#6b7280'
+    color: '#6b7280',
+    ...typography.helper
   },
   tableContainer: {
     overflowY: 'auto',
@@ -33,11 +48,11 @@ const styles = {
   th: {
     padding: '0.75rem 1rem',
     textAlign: 'left',
-    fontSize: '0.75rem',
     fontWeight: '500',
     color: '#6b7280',
     textTransform: 'uppercase',
-    letterSpacing: '0.05em'
+    letterSpacing: '0.05em',
+    ...typography.small
   },
   tbody: {
     backgroundColor: 'white'
@@ -49,9 +64,9 @@ const styles = {
   td: (isBold) => ({
     padding: '0.5rem 1rem',
     whiteSpace: 'nowrap',
-    fontSize: '0.875rem',
     color: '#4b5563',
-    fontWeight: isBold ? '500' : 'normal'
+    fontWeight: isBold ? '500' : 'normal',
+    ...typography.helper
   }),
   recommendationBox: {
     marginTop: '1rem',
@@ -65,14 +80,15 @@ const styles = {
     color: '#166534',
     marginBottom: '0.5rem',
     display: 'flex',
-    alignItems: 'center'
+    alignItems: 'center',
+    ...typography.helper
   },
   recommendationIcon: {
     marginRight: '0.25rem'
   },
   recommendationDetail: {
-    fontSize: '0.875rem',
-    color: '#166534'
+    color: '#166534',
+    ...typography.helper
   },
   boldText: {
     fontWeight: '500'
