@@ -40,14 +40,17 @@ const VarmaxModelInfo = ({ data }) => {
   const styles = {
     container: {
       display: 'flex',
-      flexDirection: 'column',
-      gap: '1.5rem'
+      flexDirection: 'row',
+      gap: '1rem',
+      marginBottom: '1.5rem'
     },
     section: {
       backgroundColor: '#f8fafc',
       border: '1px solid #e2e8f0',
       borderRadius: '0.5rem',
-      padding: '1rem'
+      padding: '1rem',
+      flex: '1',
+      minWidth: '0'
     },
     sectionTitle: {
       fontWeight: '600',
@@ -94,6 +97,13 @@ const VarmaxModelInfo = ({ data }) => {
       color: '#6b7280',
       textAlign: 'center',
       ...typography.helper
+    },
+    modelSection: {
+      backgroundColor: '#f8fafc',
+      border: '1px solid #e2e8f0',
+      borderRadius: '0.5rem',
+      padding: '1rem',
+      marginTop: '1rem'
     }
   };
 
@@ -130,7 +140,7 @@ const VarmaxModelInfo = ({ data }) => {
       </div>
 
       {/* 모델 설명 */}
-      <div style={styles.section}>
+      <div style={styles.modelSection}>
         <div style={styles.sectionTitle}>
           <Zap size={16} style={{ display: 'inline', marginRight: '0.5rem' }} />
           VARMAX 모델 특징
