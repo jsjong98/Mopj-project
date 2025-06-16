@@ -564,14 +564,51 @@ def find_compatible_cache_file(new_file_path):
         return {'found': False, 'cache_type': None}
 
 # 데이터 로딩 및 전처리 함수
-def load_data(file_path):
-    """데이터 로드 및 기본 전처리"""
-    logger.info("Loading data...")
+def load_data(file_path, model_type=None):
+    """
+    데이터 로드 및 기본 전처리
+    
+    Args:
+        file_path (str): 데이터 파일 경로
+        model_type (str): 모델 타입 ('lstm', 'varmax', None)
+                         - 'lstm': 단일/누적 예측용, 2022년 이전 데이터 제거
+                         - 'varmax': 장기예측용, 모든 데이터 유지
+                         - None: 기본 동작 (모든 데이터 유지)
+    
+    Returns:
+        pd.DataFrame: 전처리된 데이터프레임
+    """
+    logger.info(f"Loading data with model_type: {model_type}")
     df = pd.read_csv(file_path)
     df['Date'] = pd.to_datetime(df['Date'])
     df.set_index('Date', inplace=True)
     
-    logger.info(f"Original data shape: {df.shape}")
+    logger.info(f"Original data shape: {df.shape} (from {df.index.min()} to {df.index.max()})")
+    
+    # 🔑 모델 타입별 데이터 필터링
+    if model_type == 'lstm':
+        # LSTM 모델용: 2022년 이전 데이터 제거
+        cutoff_date = pd.to_datetime('2022-01-01')
+        original_shape = df.shape
+        df = df[df.index >= cutoff_date]
+        
+        logger.info(f"📊 LSTM model: Filtered data from 2022-01-01")
+        logger.info(f"  Original: {original_shape[0]} records")
+        logger.info(f"  Filtered: {df.shape[0]} records (removed {original_shape[0] - df.shape[0]} records)")
+        logger.info(f"  Date range: {df.index.min()} to {df.index.max()}")
+        
+        if df.empty:
+            raise ValueError("No data available after 2022-01-01 filter for LSTM model")
+            
+    elif model_type == 'varmax':
+        # VARMAX 모델용: 모든 데이터 사용
+        logger.info(f"📊 VARMAX model: Using all available data")
+        logger.info(f"  Full date range: {df.index.min()} to {df.index.max()}")
+        
+    else:
+        # 기본 동작: 모든 데이터 사용
+        logger.info(f"📊 Default mode: Using all available data")
+        logger.info(f"  Full date range: {df.index.min()} to {df.index.max()}")
     
     # 모든 inf 값을 NaN으로 변환
     df = df.replace([np.inf, -np.inf], np.nan)
@@ -3179,7 +3216,9 @@ def get_global_y_range(original_df, test_dates, predict_window):
     return y_min, y_max
 
 def visualize_attention_weights(model, features, prev_value, sequence_start_date, feature_names=None):
-    """모델의 어텐션 가중치를 시각화하는 함수"""
+    """
+    모델의 어텐션 가중치를 시각화하는 함수 - 2x2 레이아웃으로 개선
+    """
     model.eval()
     
     # 특성 이름이 없으면 인덱스로 생성
@@ -3213,14 +3252,23 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
             date = sequence_start_date - timedelta(days=seq_len-i-1)
             date_labels.append(format_date(date, '%Y-%m-%d'))
         except:
+            # 날짜 변환 오류 시 인덱스 사용
             date_labels.append(f"T-{seq_len-i-1}")
     
-    # 1x2 그래프 생성 (특성 중요도, 시간 중요도)
-    fig, axes = plt.subplots(1, 2, figsize=(24, 12))
-    fig.suptitle(f"Model Importance Analysis - {format_date(sequence_start_date, '%Y-%m-%d')}", 
-                fontsize=16)
+    # GridSpec을 사용한 레이아웃 생성 - 상단 2개, 하단 1개 큰 그래프
+    fig = plt.figure(figsize=(24, 18))
+    gs = GridSpec(2, 2, height_ratios=[1, 1.2], figure=fig)
+    fig.suptitle(f"Attention Weight Analysis for Sequence {format_date(sequence_start_date, '%Y-%m-%d')}", 
+                fontsize=24, fontweight='bold')
     
-    # 특성 중요도 계산
+    # 전체 폰트 크기 설정
+    plt.rcParams.update({'font.size': 16})
+    
+    # 특성 중요도 계산을 위해 데이터 준비
+    feature_importance = np.zeros(len(feature_names))
+    
+    # 특성 중요도를 간단한 방법으로 계산
+    # 마지막 시점에서 각 특성의 절대값 사용
     feature_importance = np.mean(np.abs(features[0].cpu().numpy()), axis=0)
     
     # 정규화
@@ -3232,30 +3280,8 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
     sorted_features = [feature_names[i] for i in sorted_idx]
     sorted_importance = feature_importance[sorted_idx]
     
-    # 상위 10개 특성만 표시
-    top_n = min(10, len(sorted_features))
-    
-    # 플롯 1: 특성별 중요도 (수평 막대 그래프)
-    ax1 = axes[0]
-    
-    try:
-        # 수평 막대 그래프로 표시
-        y_pos = range(top_n)
-        ax1.barh(y_pos, sorted_importance[:top_n], color='#3498db')
-        ax1.set_yticks(y_pos)
-        ax1.set_yticklabels(sorted_features[:top_n])
-        ax1.set_title("Top Feature Importance")
-        ax1.set_xlabel("Relative Importance")
-        
-        # 중요도 값 표시
-        for i, v in enumerate(sorted_importance[:top_n]):
-            ax1.text(v + 0.01, i, f"{v:.3f}", va='center')
-    except Exception as e:
-        logger.error(f"Feature importance visualization error: {str(e)}")
-        ax1.text(0.5, 0.5, "Visualization error", ha='center', va='center')
-    
-    # 플롯 2: 시간적 중요도
-    ax2 = axes[1]
+    # 플롯 1: 시간적 중요도 (Time Step Importance) - 상단 왼쪽
+    ax1 = fig.add_subplot(gs[0, 0])
     
     # 각 시점의 평균 절대값으로 시간적 중요도 추정
     temporal_importance = np.mean(np.abs(features[0].cpu().numpy()), axis=1)
@@ -3263,25 +3289,148 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
         temporal_importance = temporal_importance / np.sum(temporal_importance)
     
     try:
-        # 시간적 중요도 표시 - 막대 그래프
-        ax2.bar(range(len(date_labels)), temporal_importance, color='#2ecc71')
-        ax2.set_xticks(range(len(date_labels)))
-        ax2.set_xticklabels(date_labels, rotation=45, ha='right')
-        ax2.set_title("Time Sequence Importance")
-        ax2.set_xlabel("Date")
-        ax2.set_ylabel("Relative Importance")
+        # 막대그래프로 시간적 중요도 표시
+        bars = ax1.bar(range(len(date_labels)), temporal_importance, color='skyblue', alpha=0.7)
+        
+        # X축 라벨 간격 조정 - 너무 많으면 일부만 표시
+        if len(date_labels) > 20:
+            # 20개 이상이면 7개 간격으로 표시
+            step = max(1, len(date_labels) // 7)
+            tick_indices = list(range(0, len(date_labels), step))
+            # 마지막 날짜도 포함
+            if tick_indices[-1] != len(date_labels) - 1:
+                tick_indices.append(len(date_labels) - 1)
+            ax1.set_xticks(tick_indices)
+            ax1.set_xticklabels([date_labels[i] for i in tick_indices], rotation=45, ha='right', fontsize=14)
+        elif len(date_labels) > 10:
+            # 10-20개면 3개 간격으로 표시
+            step = max(1, len(date_labels) // 5)
+            tick_indices = list(range(0, len(date_labels), step))
+            if tick_indices[-1] != len(date_labels) - 1:
+                tick_indices.append(len(date_labels) - 1)
+            ax1.set_xticks(tick_indices)
+            ax1.set_xticklabels([date_labels[i] for i in tick_indices], rotation=45, ha='right', fontsize=14)
+        else:
+            # 10개 이하면 모두 표시
+            ax1.set_xticks(range(len(date_labels)))
+            ax1.set_xticklabels(date_labels, rotation=45, ha='right', fontsize=14)
+            
+        ax1.set_title("Time Step Importance", fontsize=18, fontweight='bold', pad=20)
+        ax1.set_xlabel("Sequence Dates", fontsize=16, fontweight='bold')
+        ax1.set_ylabel("Relative Importance", fontsize=16, fontweight='bold')
+        ax1.tick_params(axis='both', which='major', labelsize=14)
         
         # 마지막 시점 강조
-        ax2.bar(len(date_labels)-1, temporal_importance[-1], color='#e74c3c')
+        ax1.bar(len(date_labels)-1, temporal_importance[-1], color='red', alpha=0.7)
+        
+        # 그리드 추가
+        ax1.grid(True, alpha=0.3)
     except Exception as e:
-        logger.error(f"Time importance visualization error: {str(e)}")
-        ax2.text(0.5, 0.5, "Visualization error", ha='center', va='center')
+        logger.error(f"시간적 중요도 시각화 오류: {str(e)}")
+        ax1.text(0.5, 0.5, "Visualization error", ha='center', va='center', fontsize=16)
     
-    plt.tight_layout()
+    # 플롯 2: 특성별 중요도 (Feature Importance) - 상단 오른쪽
+    ax2 = fig.add_subplot(gs[0, 1])
+    
+    # 상위 10개 특성만 표시
+    top_n = min(10, len(sorted_features))
+    
+    try:
+        # 수평 막대 차트로 표시
+        y_pos = range(top_n)
+        bars = ax2.barh(y_pos, sorted_importance[:top_n], color='lightgreen', alpha=0.7)
+        ax2.set_yticks(y_pos)
+        ax2.set_yticklabels(sorted_features[:top_n], fontsize=14)
+        ax2.set_title("Feature Importance", fontsize=18, fontweight='bold', pad=20)
+        ax2.set_xlabel("Relative Importance", fontsize=16, fontweight='bold')
+        ax2.tick_params(axis='both', which='major', labelsize=14)
+        
+        # 중요도 값 표시
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            ax2.text(width + 0.01, bar.get_y() + bar.get_height()/2, 
+                    f"{width:.3f}", va='center', fontsize=13, fontweight='bold')
+        
+        # 그리드 추가
+        ax2.grid(True, alpha=0.3, axis='x')
+    except Exception as e:
+        logger.error(f"특성 중요도 시각화 오류: {str(e)}")
+        ax2.text(0.5, 0.5, "Visualization error", ha='center', va='center', fontsize=16)
+    
+    # 플롯 3: 상위 특성들의 시계열 그래프 (Top Features Time Series) - 하단 전체
+    ax3 = fig.add_subplot(gs[1, :])
+    
+    try:
+        # 상위 8개 특성 사용 (더 많은 특성을 보여줄 수 있음)
+        top_n_series = min(8, len(sorted_features))
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        
+        for i in range(top_n_series):
+            feature_idx = sorted_idx[i]
+            feature_name = feature_names[feature_idx]
+            
+            # 해당 특성의 시계열 데이터
+            feature_data = features[0, :, feature_idx].cpu().numpy()
+            
+            # min-max 정규화로 모든 특성을 같은 스케일로 표시
+            feature_min = feature_data.min()
+            feature_max = feature_data.max()
+            if feature_max > feature_min:  # 0으로 나누기 방지
+                norm_data = (feature_data - feature_min) / (feature_max - feature_min)
+            else:
+                norm_data = np.zeros_like(feature_data)
+            
+            # 특성 중요도에 비례하는 선 두께
+            line_width = 2 + sorted_importance[i] * 6
+            
+            # 플롯
+            ax3.plot(range(len(date_labels)), norm_data, 
+                    label=f"{feature_name[:20]}... ({sorted_importance[i]:.3f})" if len(feature_name) > 20 else f"{feature_name} ({sorted_importance[i]:.3f})",
+                    linewidth=line_width, color=colors[i % len(colors)], alpha=0.8, marker='o', markersize=4)
+        
+        ax3.set_title("Top Features Time Series (Normalized)", fontsize=20, fontweight='bold', pad=25)
+        ax3.set_xlabel("Time Steps", fontsize=18, fontweight='bold')
+        ax3.set_ylabel("Normalized Value", fontsize=18, fontweight='bold')
+        ax3.legend(fontsize=14, loc='best', ncol=2)  # 2열로 범례 표시
+        ax3.grid(True, linestyle='--', alpha=0.5)
+        ax3.tick_params(axis='both', which='major', labelsize=15)
+        
+        # x축 라벨을 간소화 (너무 많으면 가독성 떨어짐)
+        if len(date_labels) > 20:
+            # 20개 이상이면 7개 간격으로 표시
+            step = max(1, len(date_labels) // 7)
+            tick_indices = list(range(0, len(date_labels), step))
+            # 마지막 날짜도 포함
+            if tick_indices[-1] != len(date_labels) - 1:
+                tick_indices.append(len(date_labels) - 1)
+            ax3.set_xticks(tick_indices)
+            ax3.set_xticklabels([date_labels[i] for i in tick_indices], 
+                              rotation=45, ha='right', fontsize=14)
+        elif len(date_labels) > 10:
+            # 10-20개면 5개 간격으로 표시
+            step = max(1, len(date_labels) // 5)
+            tick_indices = list(range(0, len(date_labels), step))
+            if tick_indices[-1] != len(date_labels) - 1:
+                tick_indices.append(len(date_labels) - 1)
+            ax3.set_xticks(tick_indices)
+            ax3.set_xticklabels([date_labels[i] for i in tick_indices], 
+                              rotation=45, ha='right', fontsize=14)
+        else:
+            # 10개 이하면 모두 표시
+            ax3.set_xticks(range(len(date_labels)))
+            ax3.set_xticklabels(date_labels, rotation=45, ha='right', fontsize=14)
+            
+    except Exception as e:
+        logger.error(f"시계열 시각화 오류: {str(e)}")
+        ax3.text(0.5, 0.5, "Visualization error", ha='center', va='center', fontsize=18)
+    
+
+    
+    plt.tight_layout(pad=3.0)
     
     # 이미지를 메모리에 저장
     img_buf = io.BytesIO()
-    plt.savefig(img_buf, format='png', dpi=600)
+    plt.savefig(img_buf, format='png', dpi=300, bbox_inches='tight')
     plt.close()
     img_buf.seek(0)
     
@@ -4019,8 +4168,8 @@ def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, 
             if len(loaded_predictions) > 0:
                 logger.info(f"💡 [CACHE] Using cached predictions will significantly speed up processing!")
 
-        # 데이터 로드
-        df = load_data(file_path)
+        # 데이터 로드 (누적 예측용 - LSTM 모델, 2022년 이전 데이터 제거)
+        df = load_data(file_path, model_type='lstm')
         prediction_state['current_data'] = df
         prediction_state['prediction_progress'] = 10
 
@@ -4700,15 +4849,25 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
         
         logger.info(f"  ✅ Model trained successfully for prediction starting {format_date(prediction_start_date)}")
         
-        # ✅ 핵심 수정: 예측 데이터 준비 시 날짜별 다른 시퀀스 보장
+        # ✅ 핵심 수정: 예측 데이터 준비 시 날짜별 다른 시퀀스 보장 (데이터 누출 방지)
         seq_len = optimized_params['sequence_length']
-        current_idx = df.index.get_loc(current_date)
-        start_idx = max(0, current_idx - seq_len + 1)
         
-        # 시퀀스 데이터 추출 (current_date까지만!)
-        sequence = df.iloc[start_idx:current_idx+1][selected_features].values
+        # 🔑 중요: current_date를 예측하려면 current_date 이전의 데이터만 사용
+        available_dates_before_current = [d for d in df.index if d < current_date]
         
-        logger.info(f"  📊 Sequence data: {sequence.shape} from {format_date(df.index[start_idx])} to {format_date(current_date)}")
+        if len(available_dates_before_current) < seq_len:
+            logger.warning(f"⚠️  Insufficient historical data before {format_date(current_date)}: {len(available_dates_before_current)} < {seq_len}")
+            # 사용 가능한 모든 이전 데이터 사용
+            sequence_dates = available_dates_before_current
+        else:
+            # 마지막 seq_len개의 이전 날짜 사용
+            sequence_dates = available_dates_before_current[-seq_len:]
+        
+        # 시퀀스 데이터 추출 (current_date 제외!)
+        sequence = df.loc[sequence_dates][selected_features].values
+        
+        logger.info(f"  📊 Sequence data: {sequence.shape} from {format_date(sequence_dates[0])} to {format_date(sequence_dates[-1])}")
+        logger.info(f"  🚫 Excluded current_date: {format_date(current_date)} (preventing data leakage)")
         
         # 모델에서 반환된 스케일러 사용 (일관성 보장)
         sequence = model_scaler.transform(sequence)
@@ -5586,21 +5745,31 @@ class VARMAXSemiMonthlyForecaster:
         self.mape_value = None
 
     def load_data(self):
-        """데이터 로드 - 최근 800개 데이터 사용"""
+        """데이터 로드 (VARMAX 모델용 - 모든 데이터 사용, 최근 800개로 제한)"""
         try:
-            data1 = pd.read_csv(self.file_path)
-            self.df1 = pd.DataFrame(data1)
-            self.df1['Date'] = pd.to_datetime(self.df1['Date'])
-            self.df1.set_index('Date', inplace=True)
-            self.df_origin = self.df1.iloc[-800:]  # 최근 800개 데이터만 사용
+            # VARMAX 모델은 장기예측이므로 모든 데이터 사용 (2022년 이전 포함)
+            df_full = load_data(self.file_path, model_type='varmax')
+            # 기존 로직 유지: 최근 800개 데이터만 사용
+            self.df_origin = df_full.iloc[-800:]
+            logger.info(f"VARMAX data loaded: {self.df_origin.shape} (last 800 records from full dataset)")
+            logger.info(f"Date range: {self.df_origin.index.min()} to {self.df_origin.index.max()}")
         except Exception as e:
             logger.error(f"Data loading failed: {str(e)}")
             raise e
 
-    def select_variables(self):
-        """변수 선택 - 그룹별 최적 변수 선택"""
+    def select_variables(self, current_date=None):
+        """변수 선택 - 현재 날짜까지의 데이터만 사용하여 데이터 누출 방지"""
         try:
-            recent_data = self.df_origin
+            # 🔑 수정: 현재 날짜까지의 데이터만 사용
+            if current_date is not None:
+                if isinstance(current_date, str):
+                    current_date = pd.to_datetime(current_date)
+                recent_data = self.df_origin[self.df_origin.index <= current_date]
+                logger.info(f"🔧 Variable selection using data up to {current_date.strftime('%Y-%m-%d')} ({len(recent_data)} records)")
+            else:
+                recent_data = self.df_origin
+                logger.info(f"🔧 Variable selection using all available data ({len(recent_data)} records)")
+            
             correlations = recent_data.corr()[self.result_var]
             correlations = correlations.drop(self.result_var)
             correlations = correlations.sort_values(ascending=False)
@@ -5634,6 +5803,7 @@ class VARMAXSemiMonthlyForecaster:
             
             self.selected_vars = sorted(self.filtered_vars, key=lambda x: abs(correlations[x]), reverse=True)
             logger.info(f"Selected {len(self.selected_vars)} variables for VARMAX prediction")
+            logger.info(f"Top 5 selected variables: {self.selected_vars[:5]}")
             
         except Exception as e:
             logger.error(f"Variable selection failed: {str(e)}")
@@ -6062,7 +6232,7 @@ class VARMAXSemiMonthlyForecaster:
         try:
             self.var_num = var_num
             self.load_data()
-            self.select_variables()
+            self.select_variables(current_date)
             self.prepare_variable_for_prediction(current_date)
             self.fit_varmax_model()
             logger.info("VARMAX 변수 선정 모델 학습 완료")
@@ -6096,7 +6266,7 @@ class VARMAXSemiMonthlyForecaster:
             
             logger.info(f"🔄 [VARMAX_GEN] Step 2: Selecting variables...")
             prediction_state['varmax_prediction_progress'] = 40
-            self.select_variables()
+            self.select_variables(current_date)
             
             logger.info(f"🔄 [VARMAX_GEN] Step 3: Preparing data for prediction...")
             prediction_state['varmax_prediction_progress'] = 45
@@ -6183,8 +6353,8 @@ def background_prediction_simple_compatible(file_path, current_date, save_to_csv
         logger.info(f"🎯 Starting compatible prediction for {current_date}")
         logger.info(f"  🔄 Cache enabled: {use_cache}")
         
-        # 데이터 로드
-        df = load_data(file_path)
+        # 데이터 로드 (단일 날짜 예측용 - LSTM 모델, 2022년 이전 데이터 제거)
+        df = load_data(file_path, model_type='lstm')
         prediction_state['current_data'] = df
         prediction_state['prediction_progress'] = 20
         
