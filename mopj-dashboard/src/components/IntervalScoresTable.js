@@ -1,8 +1,24 @@
 import React from 'react';
 import { DollarSign } from 'lucide-react';
 
+// 통일된 타이포그래피 시스템
+const typography = {
+  helper: {
+    fontSize: '0.875rem',
+    fontWeight: '400',
+    lineHeight: '1.5'
+  },
+  small: {
+    fontSize: '0.75rem',
+    fontWeight: '400',
+    lineHeight: '1.4'
+  }
+};
+
 const styles = {
-  container: { height: '100%' },
+  container: {
+    height: '100%'
+  },
   noData: {
     height: '16rem',
     display: 'flex',
@@ -11,20 +27,34 @@ const styles = {
     backgroundColor: '#f9fafb',
     borderRadius: '0.375rem'
   },
-  noDataText: { color: '#6b7280' },
-  tableContainer: { overflowY: 'auto', maxHeight: '16rem' },
-  table: { minWidth: '100%', borderCollapse: 'separate', borderSpacing: 0 },
-  thead: { backgroundColor: '#f9fafb' },
+  noDataText: {
+    color: '#6b7280',
+    ...typography.helper
+  },
+  tableContainer: {
+    overflowY: 'auto',
+    maxHeight: '16rem'
+  },
+  table: {
+    minWidth: '100%',
+    borderCollapse: 'separate',
+    borderSpacing: 0
+  },
+  thead: {
+    backgroundColor: '#f9fafb'
+  },
   th: {
     padding: '0.75rem 1rem',
     textAlign: 'left',
-    fontSize: '0.75rem',
     fontWeight: '500',
     color: '#6b7280',
     textTransform: 'uppercase',
-    letterSpacing: '0.05em'
+    letterSpacing: '0.05em',
+    ...typography.small
   },
-  tbody: { backgroundColor: 'white' },
+  tbody: {
+    backgroundColor: 'white'
+  },
   tr: (isHighlight) => ({
     backgroundColor: isHighlight ? '#f0fdf4' : 'white',
     borderBottom: '1px solid #e5e7eb'
@@ -32,11 +62,10 @@ const styles = {
   td: (isBold) => ({
     padding: '0.5rem 1rem',
     whiteSpace: 'nowrap',
-    fontSize: '0.875rem',
     color: '#4b5563',
-    fontWeight: isBold ? '500' : 'normal'
+    fontWeight: isBold ? '500' : 'normal',
+    ...typography.helper
   }),
-
   recommendationBox: {
     marginTop: '1rem',
     padding: '0.75rem',
@@ -49,10 +78,16 @@ const styles = {
     color: '#166534',
     marginBottom: '0.5rem',
     display: 'flex',
-    alignItems: 'center'
+    alignItems: 'center',
+    ...typography.helper
   },
-  recommendationIcon: { marginRight: '0.25rem' },
-  recommendationDetail: { fontSize: '0.875rem', color: '#166534' },
+  recommendationIcon: {
+    marginRight: '0.25rem'
+  },
+  recommendationDetail: {
+    color: '#166534',
+    ...typography.helper
+  },
   boldText: { fontWeight: '500' }
 };
 
@@ -75,12 +110,8 @@ const IntervalScoresTable = ({ data, purchaseReliability = 0 }) => {
   const displayData = validScores.slice(0, 10);
   const bestInterval = displayData[0];
 
-
-
   return (
     <div style={styles.container}>
-
-
       <div style={styles.tableContainer}>
         <table style={styles.table}>
           <thead style={styles.thead}>
