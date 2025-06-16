@@ -1464,6 +1464,46 @@ const App = () => {
     }
   }, [activeTab]);
 
+  // 통일된 타이포그래피 시스템
+  const typography = {
+    // 대제목 - 메인 페이지 제목, 웰컴 타이틀
+    mainTitle: {
+      fontSize: windowWidth < 768 ? '1.75rem' : '2rem',
+      fontWeight: '700',
+      lineHeight: '1.2'
+    },
+    // 중제목 - 섹션 제목, 모델 정보 제목
+    sectionTitle: {
+      fontSize: '1.5rem',
+      fontWeight: '600',
+      lineHeight: '1.3'
+    },
+    // 소제목 - 카드 제목, 기능 제목
+    cardTitle: {
+      fontSize: '1.125rem',
+      fontWeight: '600',
+      lineHeight: '1.4'
+    },
+    // 내용 - 일반 텍스트
+    content: {
+      fontSize: '1rem',
+      fontWeight: '400',
+      lineHeight: '1.6'
+    },
+    // 보조 텍스트 - 설명, 도움말
+    helper: {
+      fontSize: '0.875rem',
+      fontWeight: '400',
+      lineHeight: '1.5'
+    },
+    // 작은 텍스트 - 라벨, 메타 정보
+    small: {
+      fontSize: '0.75rem',
+      fontWeight: '400',
+      lineHeight: '1.4'
+    }
+  };
+
   // 앱 전체에서 사용할 스타일 정의 (수정됨)
   const styles = {
     appContainer: {
@@ -1490,18 +1530,18 @@ const App = () => {
       display: 'flex',
       alignItems: 'center',
       gap: '0.5rem',
-      marginLeft: '2rem'
+      marginLeft: windowWidth < 768 ? '0.5rem' : '2rem'
     },
     headerTabs: {
       display: 'flex',
       alignItems: 'center',
-      gap: '2rem'
+      gap: windowWidth < 768 ? '1rem' : '2rem'
     },
     headerTab: (isActive) => ({
       padding: '0.5rem 1rem',
       cursor: 'pointer',
       fontWeight: isActive ? '600' : '500',
-      fontSize: '1rem',
+      ...typography.content,
       color: isActive ? '#2563eb' : '#6b7280',
       borderBottom: isActive ? '2px solid #2563eb' : '2px solid transparent',
       display: 'flex',
@@ -1533,7 +1573,7 @@ const App = () => {
       alignItems: 'center',
       gap: '0.5rem',
       cursor: 'pointer',
-      fontSize: '0.875rem',
+      ...typography.helper,
       color: '#374151',
       borderBottom: '1px solid #f3f4f6',
       transition: 'background-color 0.2s',
@@ -1547,11 +1587,10 @@ const App = () => {
       alignItems: 'center',
       gap: '1rem',
       color: '#6b7280',
-      fontSize: '0.875rem'
+      ...typography.helper
     },
     titleText: {
-      fontSize: '1.5rem',
-      fontWeight: '700',
+      ...typography.sectionTitle,
       color: '#1f2937'
     },
     subTabContainer: {
@@ -1568,7 +1607,8 @@ const App = () => {
       padding: '0.875rem 1.5rem',
       cursor: 'pointer',
       fontWeight: isActive ? '600' : '500',
-      fontSize: '0.9rem',
+      ...typography.helper,
+      fontSize: '0.875rem', // 서브탭도 helper 크기로 통일
       color: isActive ? '#ffffff' : '#6b7280',
       backgroundColor: isActive ? '#1e40af' : '#ffffff',
       borderRight: '1px solid #e5e7eb',
@@ -1597,8 +1637,7 @@ const App = () => {
       marginBottom: '1rem'
     },
     cardTitle: {
-      fontSize: '1.125rem',
-      fontWeight: '600',
+      ...typography.cardTitle,
       display: 'flex',
       alignItems: 'center'
     },
@@ -1646,7 +1685,7 @@ const App = () => {
     },
     selectLabel: {
       display: 'block',
-      fontSize: '0.875rem',
+      ...typography.helper,
       fontWeight: '500',
       color: '#374151',
       marginBottom: '0.5rem'
@@ -1668,7 +1707,7 @@ const App = () => {
       gap: '0.5rem',
       cursor: 'pointer',
       border: 'none',
-      fontSize: '0.875rem',
+      ...typography.helper,
       fontWeight: '500',
       whiteSpace: 'nowrap',
       minWidth: '180px',
@@ -1684,7 +1723,7 @@ const App = () => {
       gap: '0.5rem',
       cursor: 'pointer',
       border: '1px solid #d1d5db',
-      fontSize: '0.875rem',
+      ...typography.helper,
       fontWeight: '500',
       whiteSpace: 'nowrap',
       minWidth: '180px',
@@ -1702,7 +1741,7 @@ const App = () => {
       gap: '0.5rem',
       cursor: 'pointer',
       border: 'none',
-      fontSize: '0.875rem',
+      ...typography.helper,
       fontWeight: '500',
       whiteSpace: 'nowrap',
       minWidth: '180px',
@@ -1713,7 +1752,7 @@ const App = () => {
       marginTop: '1rem'
     },
     progressText: {
-      fontSize: '0.875rem',
+      ...typography.helper,
       color: '#6b7280',
       marginBottom: '0.25rem'
     },
@@ -1736,11 +1775,11 @@ const App = () => {
       padding: '1rem',
       textAlign: 'center',
       color: '#6b7280',
-      fontSize: '0.875rem'
+      ...typography.helper
     },
     helpText: {
       marginTop: '0.5rem',
-      fontSize: '0.875rem',
+      ...typography.helper,
       color: '#6b7280'
     },
     tabContainer: {
@@ -1752,6 +1791,7 @@ const App = () => {
       padding: '0.75rem 1rem',
       cursor: 'pointer',
       fontWeight: isActive ? '500' : 'normal',
+      ...typography.content,
       color: isActive ? '#2563eb' : '#6b7280',
       borderBottom: isActive ? '2px solid #2563eb' : 'none',
       display: 'flex',
@@ -1779,16 +1819,15 @@ const App = () => {
       maxWidth: '100%'
     },
     previewText: {
-      fontSize: '0.875rem',
+      ...typography.helper,
       fontWeight: '500',
       color: '#1e40af',
       margin: '0 0 0.25rem 0'
     },
     previewHelpText: {
       margin: '0.25rem 0 0 0',
-      fontSize: '0.75rem',
-      color: '#6b7280',
-      lineHeight: '1.4'
+      ...typography.small,
+      color: '#6b7280'
     },
     exampleBox: {
       marginTop: '0.5rem',
@@ -1798,16 +1837,16 @@ const App = () => {
       border: '1px solid #e2e8f0'
     },
     exampleTitle: {
-      fontSize: '0.75rem',
+      ...typography.small,
       fontWeight: '600',
       color: '#475569',
       margin: '0 0 0.25rem 0'
     },
     exampleItem: {
-      fontSize: '0.7rem',
+      ...typography.small,
+      ...typography.small, // 작은 텍스트도 통일
       color: '#64748b',
-      margin: '0.1rem 0',
-      lineHeight: '1.3'
+      margin: '0.1rem 0'
     },
     // 홈 페이지 스타일
     homeContainer: {
@@ -1827,17 +1866,15 @@ const App = () => {
       margin: '0 auto'
     },
     welcomeTitle: {
-      fontSize: windowWidth < 768 ? '1.8rem' : '2.5rem',
-      fontWeight: '700',
+      ...typography.mainTitle,
       marginBottom: '1rem',
-      lineHeight: '1.2',
       whiteSpace: windowWidth < 768 ? 'normal' : 'nowrap',
       textAlign: 'center'
     },
     welcomeSubtitle: {
-      fontSize: '1.25rem',
-      opacity: '0.9',
-      lineHeight: '1.6'
+      ...typography.content,
+      fontSize: '1.125rem', // content보다 약간 크게 (홈페이지 전용)
+      opacity: '0.9'
     },
     featuresGrid: {
       display: 'grid',
@@ -1862,15 +1899,14 @@ const App = () => {
       marginBottom: '1.5rem'
     },
     featureTitle: {
-      fontSize: '1.5rem',
-      fontWeight: '600',
+      ...typography.cardTitle,
+              fontSize: '1.25rem', // 홈페이지 특성 제목 (cardTitle보다 약간 크게)
       marginBottom: '1rem',
       color: '#1f2937'
     },
     featureDescription: {
-      fontSize: '1rem',
+      ...typography.content,
       color: '#6b7280',
-      lineHeight: '1.6',
       marginBottom: '1.5rem'
     },
     featureHighlights: {
@@ -1880,7 +1916,7 @@ const App = () => {
       alignItems: 'center'
     },
     highlight: {
-      fontSize: '0.875rem',
+      ...typography.helper,
       color: '#2563eb',
       fontWeight: '500'
     },
@@ -1891,8 +1927,7 @@ const App = () => {
       boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
     },
     modelTitle: {
-      fontSize: '1.75rem',
-      fontWeight: '600',
+      ...typography.sectionTitle,
       marginBottom: '2rem',
       color: '#1f2937',
       display: 'flex',
@@ -1916,8 +1951,7 @@ const App = () => {
       boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
     },
     guideTitle: {
-      fontSize: '1.75rem',
-      fontWeight: '600',
+      ...typography.sectionTitle,
       marginBottom: '2rem',
       color: '#1f2937',
       display: 'flex',
@@ -2035,6 +2069,16 @@ const App = () => {
                 <span>예측 시작일: {currentDate}</span>
               </div>
             )}
+            <img 
+              src={`${process.env.PUBLIC_URL}/IPSE_logo.png`} 
+              alt="IPSE 연구실 로고" 
+              style={{
+                height: '60px',
+                width: 'auto',
+                marginLeft: windowWidth < 768 ? '0.5rem' : '1rem'
+              }}
+              title="Intelligence Process System Engineering, SKKU - 성균관대학교 화학공학과"
+            />
           </div>
         </div>
       </header>
@@ -2271,10 +2315,10 @@ const App = () => {
                     <Database size={16} style={{ color: '#2563eb' }} />
                     <strong style={{ color: '#1e40af' }}>파일 업로드 완료</strong>
                   </div>
-                  <div style={{ fontSize: '0.875rem', color: '#64748b', lineHeight: '1.4' }}>
-                    📄 <strong>파일:</strong> {fileInfo.original_filename || fileInfo.filename}<br/>
-                    📊 <strong>데이터 날짜:</strong> {fileInfo.dates && fileInfo.dates.length > 0 && `${fileInfo.dates[fileInfo.dates.length - 1]} (총 ${fileInfo.dates.length}일)`}
-                  </div>
+                                      <div style={{ ...typography.helper, color: '#64748b' }}>
+                      📄 <strong>파일:</strong> {fileInfo.original_filename || fileInfo.filename}<br/>
+                      📊 <strong>데이터 날짜:</strong> {fileInfo.dates && fileInfo.dates.length > 0 && `${fileInfo.dates[fileInfo.dates.length - 1]} (총 ${fileInfo.dates.length}일)`}
+                    </div>
                   
                   {/* 🎯 캐시 정보 표시 */}
                   {fileInfo.cache_info && (
@@ -2296,12 +2340,12 @@ const App = () => {
                         </span>
                         <strong style={{
                           color: fileInfo.cache_info.found ? '#1e40af' : '#d97706',
-                          fontSize: '0.875rem'
+                          ...typography.helper
                         }}>
                           {fileInfo.cache_info.found ? '캐시 활용 가능' : '새 데이터'}
                         </strong>
                       </div>
-                      <div style={{ fontSize: '0.75rem', color: '#6b7280', lineHeight: '1.4' }}>
+                      <div style={{ ...typography.small, color: '#6b7280' }}>
                         {fileInfo.cache_info.message}
                         {fileInfo.cache_info.cache_type === 'exact' && (
                           <><br/>✨ <strong>기존 예측 결과를 즉시 불러올 수 있습니다!</strong></>
@@ -2489,9 +2533,9 @@ const App = () => {
                         marginBottom: '1rem'
                       }}>
                         <Archive size={20} style={{ color: '#6366f1' }} />
-                        <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: '#1f2937' }}>
-                          저장된 VARMAX 예측 목록
-                        </h3>
+                                            <h3 style={{ margin: 0, ...typography.content, fontWeight: '600', color: '#1f2937' }}>
+                      저장된 VARMAX 예측 목록
+                    </h3>
                       </div>
                       
                       {savedVarmaxPredictions.length === 0 ? (
@@ -2499,7 +2543,7 @@ const App = () => {
                           textAlign: 'center',
                           padding: '2rem 1rem',
                           color: '#6b7280',
-                          fontSize: '0.875rem'
+                          ...typography.helper
                         }}>
                           <Archive size={32} style={{ color: '#d1d5db', marginBottom: '0.5rem' }} />
                           <p>저장된 VARMAX 예측이 없습니다.</p>
@@ -2532,13 +2576,13 @@ const App = () => {
                                 <div style={{
                                   fontWeight: '600',
                                   color: '#1f2937',
-                                  fontSize: '0.875rem',
+                                  ...typography.helper,
                                   marginBottom: '0.25rem'
                                 }}>
                                   📅 {formatDate(prediction.prediction_date)}
                                 </div>
                                 <div style={{
-                                  fontSize: '0.75rem',
+                                  ...typography.small,
                                   color: '#6b7280'
                                 }}>
                                   💾 {new Date(prediction.created_at).toLocaleString('ko-KR')}
@@ -2557,7 +2601,7 @@ const App = () => {
                                     color: '#ffffff',
                                     border: 'none',
                                     borderRadius: '0.25rem',
-                                    fontSize: '0.75rem',
+                                    ...typography.small,
                                     fontWeight: '500',
                                     cursor: 'pointer',
                                     display: 'flex',
@@ -2690,17 +2734,17 @@ const App = () => {
                               gap: '0.5rem',
                               marginBottom: '0.5rem'
                             }}>
-                              <span style={{ fontSize: '1rem' }}>
+                              <span style={{ ...typography.content }}>
                                 {cacheInfo.cache_percentage > 0 ? '⚡' : '🔄'}
                               </span>
                               <strong style={{
                                 color: cacheInfo.cache_percentage > 0 ? '#1e40af' : '#dc2626',
-                                fontSize: '0.875rem'
+                                ...typography.helper
                               }}>
                                 캐시 활용률: {cacheInfo.cache_percentage}%
                               </strong>
                             </div>
-                            <div style={{ fontSize: '0.75rem', color: '#6b7280', lineHeight: '1.4' }}>
+                            <div style={{ ...typography.small, color: '#6b7280' }}>
                               📊 저장된 예측: {cacheInfo.cached_predictions}개 / 전체: {cacheInfo.total_dates_in_range}개<br/>
                               {cacheInfo.cache_percentage > 0 && (
                                 <>⏱️ {cacheInfo.estimated_time_savings}</>
@@ -2777,7 +2821,7 @@ const App = () => {
                         <div>
                           <h4 style={{ 
                             margin: 0, 
-                            fontSize: '0.875rem', 
+                            ...typography.helper, 
                             fontWeight: '600',
                             color: '#1e40af'
                           }}>
@@ -2785,7 +2829,7 @@ const App = () => {
                           </h4>
                           <p style={{ 
                             margin: 0, 
-                            fontSize: '0.75rem', 
+                            ...typography.small, 
                             color: '#6b7280',
                             marginTop: '0.25rem'
                           }}>
@@ -2801,7 +2845,7 @@ const App = () => {
                           border: 'none',
                           borderRadius: '0.375rem',
                           padding: '0.5rem 1rem',
-                          fontSize: '0.75rem',
+                          ...typography.small,
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
@@ -2868,7 +2912,7 @@ const App = () => {
                         border: 'none',
                         borderRadius: '0.375rem',
                         padding: '0.5rem 1rem',
-                        fontSize: '0.875rem',
+                        ...typography.helper,
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
@@ -2882,9 +2926,9 @@ const App = () => {
                   <div style={styles.helpText}>
                     <p>* 상위 특성이 MOPJ 예측에 가장 큰 영향을 미치는 요소입니다.</p>
                     {!attentionImage && (
-                      <p style={{ color: '#ef4444', fontSize: '0.875rem', marginTop: '0.5rem' }}>
-                        * Attention Map이 로드되지 않았습니다. 위의 '새로고침' 버튼을 클릭해주세요.
-                      </p>
+                                              <p style={{ color: '#ef4444', ...typography.helper, marginTop: '0.5rem' }}>
+                          * Attention Map이 로드되지 않았습니다. 위의 '새로고침' 버튼을 클릭해주세요.
+                        </p>
                     )}
                   </div>
                 </div>
@@ -2943,7 +2987,7 @@ const App = () => {
                             border: 'none',
                             borderRadius: '0.375rem',
                             padding: '0.5rem 1rem',
-                            fontSize: '0.875rem',
+                            ...typography.helper,
                             cursor: 'pointer'
                           }}
                         >
@@ -2961,14 +3005,15 @@ const App = () => {
                           marginBottom: '1rem'
                         }}>
                           <h4 style={{ 
-                            fontSize: '0.9rem', 
+                            ...typography.helper, 
+                            ...typography.helper, // helper 크기로 통일 
                             fontWeight: '600', 
                             marginBottom: '0.5rem',
                             color: '#374151'
                           }}>
                             🚀 스마트 캐시 활용 현황
                           </h4>
-                          <div style={{ fontSize: '0.875rem', color: '#6b7280', lineHeight: '1.5' }}>
+                          <div style={{ ...typography.helper, color: '#6b7280' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span>📊 총 예측 날짜:</span>
                               <span style={{ fontWeight: '600', color: '#059669' }}>
@@ -3016,9 +3061,9 @@ const App = () => {
                         </div>
                       )}
                       
-                      <p style={{ fontSize: '0.875rem', color: '#6b7280' }}>
-                        구매 신뢰도 계산이 잘못되었다면 위 버튼을 클릭하여 캐시를 클리어하고 다시 누적 예측을 실행해주세요.
-                      </p>
+                                          <p style={{ ...typography.helper, color: '#6b7280' }}>
+                      구매 신뢰도 계산이 잘못되었다면 위 버튼을 클릭하여 캐시를 클리어하고 다시 누적 예측을 실행해주세요.
+                    </p>
                     </div>
 
                     {/* 신뢰도 종합 분석 카드 */}
@@ -3084,7 +3129,7 @@ const App = () => {
                           <h2 style={styles.cardTitle}>
                             <TrendingUp size={18} style={styles.iconStyle} />
                             선택 날짜 ({selectedAccumulatedDate || '없음'}) 예측 결과
-                            <span style={{ fontSize: '0.75rem', color: '#6b7280', marginLeft: '0.5rem' }}>
+                            <span style={{ ...typography.small, color: '#6b7280', marginLeft: '0.5rem' }}>
                               (데이터: {selectedDatePredictions?.length || 0}개, 구간: {selectedDateIntervalScores?.length || 0}개)
                               {selectedDatePredictions?.length > 0 && (
                                 <span style={{ color: '#3b82f6' }}>
@@ -3105,13 +3150,13 @@ const App = () => {
                                 border: 'none',
                                 borderRadius: '0.375rem',
                                 padding: '0.5rem 1rem',
-                                fontSize: '0.75rem',
-                                cursor: isLoading ? 'not-allowed' : 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '0.25rem',
-                                whiteSpace: 'nowrap',
-                                opacity: isLoading ? 0.6 : 1
+                                                              ...typography.small,
+                              cursor: isLoading ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.25rem',
+                              whiteSpace: 'nowrap',
+                              opacity: isLoading ? 0.6 : 1
                               }}
                             >
                               <TrendingUp size={14} />
@@ -3126,7 +3171,7 @@ const App = () => {
                             borderRadius: '0.375rem',
                             marginBottom: '1rem'
                           }}>
-                            <p style={{ fontSize: '0.875rem', margin: 0, color: '#92400e' }}>
+                            <p style={{ ...typography.helper, margin: 0, color: '#92400e' }}>
                               📋 {selectedAccumulatedDate} 날짜를 선택했지만 예측 데이터가 로드되지 않았습니다. 
                               다시 해당 날짜를 클릭해보세요.
                             </p>
@@ -3140,7 +3185,7 @@ const App = () => {
                         <h2 style={styles.cardTitle}>
                           <Award size={18} style={styles.iconStyle} />
                           선택 날짜 구매 의사결정 구간
-                          <span style={{ fontSize: '0.75rem', color: '#6b7280', marginLeft: '0.5rem' }}>
+                          <span style={{ ...typography.small, color: '#6b7280', marginLeft: '0.5rem' }}>
                             ({selectedAccumulatedDate || '없음'} 기준)
                             {selectedDateIntervalScores?.length > 0 && (
                               <span style={{ color: '#10b981' }}>
@@ -3156,7 +3201,7 @@ const App = () => {
                             borderRadius: '0.375rem',
                             marginBottom: '1rem'
                           }}>
-                            <p style={{ fontSize: '0.875rem', margin: 0, color: '#92400e' }}>
+                            <p style={{ ...typography.helper, margin: 0, color: '#92400e' }}>
                               📋 {selectedAccumulatedDate} 날짜의 구간 점수 데이터가 로드되지 않았습니다. 
                               다시 해당 날짜를 클릭해보세요.
                             </p>
