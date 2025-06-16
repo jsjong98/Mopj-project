@@ -1,14 +1,45 @@
 // 새 컴포넌트: ReliabilityAnalysisCard.js
-import React from 'react';
-import { Shield, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Shield, CheckCircle, AlertTriangle, XCircle, HelpCircle } from 'lucide-react';
+import ReliabilityModal from './ReliabilityModal';
+
+// 통일된 타이포그래피 시스템
+const typography = {
+  cardTitle: {
+    fontSize: '1.125rem',
+    fontWeight: '600',
+    lineHeight: '1.4'
+  },
+  content: {
+    fontSize: '1rem',
+    fontWeight: '400',
+    lineHeight: '1.6'
+  },
+  helper: {
+    fontSize: '0.875rem',
+    fontWeight: '400',
+    lineHeight: '1.5'
+  },
+  small: {
+    fontSize: '0.75rem',
+    fontWeight: '400',
+    lineHeight: '1.4'
+  },
+  large: {
+    fontSize: '2rem',
+    fontWeight: '700',
+    lineHeight: '1.2'
+  }
+};
 
 const styles = {
   card: {
     backgroundColor: 'white',
-    borderRadius: '0.5rem',
+    borderRadius: '0.75rem',
     padding: '1.5rem',
     marginBottom: '1.5rem',
-    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+    border: '1px solid #e5e7eb'
   },
   header: {
     display: 'flex',
@@ -16,8 +47,8 @@ const styles = {
     marginBottom: '1.5rem'
   },
   title: {
-    fontSize: '1.25rem',
-    fontWeight: '600',
+    ...typography.cardTitle,
+    fontSize: '1.25rem', // 카드 제목보다 약간 크게
     color: '#374151',
     marginLeft: '0.5rem'
   },
@@ -34,17 +65,35 @@ const styles = {
     borderRadius: '0.5rem'
   },
   metricValue: (score, threshold) => ({
-    fontSize: '2rem',
-    fontWeight: 'bold',
+    ...typography.large,
     color: score >= threshold ? '#10b981' : '#ef4444'
   }),
   metricLabel: {
-    fontSize: '0.875rem',
+    ...typography.helper,
     color: '#6b7280',
-    marginTop: '0.5rem'
+    marginTop: '0.5rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.5rem'
+  },
+  helpButton: {
+    padding: '0.25rem',
+    backgroundColor: 'transparent',
+    border: '1px solid #d1d5db',
+    borderRadius: '50%',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.2s',
+    '&:hover': {
+      backgroundColor: '#f3f4f6',
+      borderColor: '#9ca3af'
+    }
   },
   threshold: {
-    fontSize: '0.75rem',
+    ...typography.small,
     color: '#6b7280',
     marginTop: '0.25rem'
   },
@@ -59,21 +108,20 @@ const styles = {
     alignItems: 'center',
     gap: '0.5rem',
     marginBottom: '0.75rem',
-    fontSize: '1.125rem',
-    fontWeight: '600',
+    ...typography.cardTitle,
     color: getJudgmentColor(level).text
   }),
   judgmentText: (level) => ({
     color: getJudgmentColor(level).text,
-    fontSize: '0.9rem',
-    lineHeight: '1.5'
+    ...typography.content,
+    fontSize: '0.9rem' // content보다 약간 작게
   }),
   detailsGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, 1fr)',
     gap: '0.5rem',
     marginTop: '0.75rem',
-    fontSize: '0.75rem',
+    ...typography.small,
     color: '#6b7280'
   }
 };
@@ -109,6 +157,18 @@ const ReliabilityAnalysisCard = ({
   purchaseReliability = 0,
   actualBusinessDays = 0
 }) => {
+  const [modalType, setModalType] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const openModal = (type) => {
+    setModalType(type);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setModalType(null);
+  };
   // 신뢰도 점수 계산
   const predictionReliability = consistencyScores && consistencyScores.consistency_score 
     ? consistencyScores.consistency_score 
@@ -156,7 +216,23 @@ const ReliabilityAnalysisCard = ({
           <div style={styles.metricValue(predictionReliability, 96)}>
             {predictionReliability.toFixed(1)}
           </div>
-          <div style={styles.metricLabel}>예측 신뢰도</div>
+          <div style={styles.metricLabel}>
+            예측 신뢰도
+            <button 
+              style={styles.helpButton}
+              onClick={() => openModal('prediction')}
+              onMouseEnter={(e) => {
+                e.target.style.backgroundColor = '#f3f4f6';
+                e.target.style.borderColor = '#9ca3af';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.backgroundColor = 'transparent';
+                e.target.style.borderColor = '#d1d5db';
+              }}
+            >
+              <HelpCircle size={14} style={{ color: '#6b7280' }} />
+            </button>
+          </div>
           <div style={styles.threshold}>기준: 96점 이상</div>
         </div>
         
@@ -164,7 +240,23 @@ const ReliabilityAnalysisCard = ({
           <div style={styles.metricValue(purchaseReliability, 63.7)}>
             {purchaseReliability.toFixed(1)}%
           </div>
-          <div style={styles.metricLabel}>구매 신뢰도</div>
+          <div style={styles.metricLabel}>
+            구매 신뢰도
+            <button 
+              style={styles.helpButton}
+              onClick={() => openModal('purchase')}
+              onMouseEnter={(e) => {
+                e.target.style.backgroundColor = '#f3f4f6';
+                e.target.style.borderColor = '#9ca3af';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.backgroundColor = 'transparent';
+                e.target.style.borderColor = '#d1d5db';
+              }}
+            >
+              <HelpCircle size={14} style={{ color: '#6b7280' }} />
+            </button>
+          </div>
           <div style={styles.threshold}>기준: 63.7% 이상</div>
         </div>
       </div>
@@ -190,6 +282,13 @@ const ReliabilityAnalysisCard = ({
           <div>신뢰도 등급: {consistencyScores ? consistencyScores.consistency_grade : 'N/A'}</div>
         </div>
       </div>
+
+      {/* 모달 */}
+      <ReliabilityModal 
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        type={modalType}
+      />
     </div>
   );
 };
