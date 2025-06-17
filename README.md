@@ -114,6 +114,57 @@ http://localhost
 
 📖 **상세한 Docker 배포 가이드**: [`DOCKER_DEPLOYMENT.md`](DOCKER_DEPLOYMENT.md)
 
+### WSL2 환경에서 Docker 실행
+
+Windows에서 WSL2를 사용하는 경우 다음 단계를 따라주세요:
+
+#### 1. 사전 준비
+```bash
+# WSL2가 활성화되어 있는지 확인
+wsl --status
+
+# WSL2 배포판 확인
+wsl --list --verbose
+```
+
+#### 2. Docker Desktop 설정
+- **Docker Desktop for Windows** 설치 및 실행
+- **Settings** → **General** → **Use the WSL 2 based engine** 체크
+- **Settings** → **Resources** → **WSL Integration**:
+  - **Enable integration with my default WSL distro** 체크
+  - 사용할 WSL2 배포판 활성화
+
+#### 3. WSL2에서 프로젝트 실행
+```bash
+# WSL2 터미널에서 프로젝트 디렉토리로 이동
+cd /mnt/c/path/to/New-mopj-project-main
+# 또는 WSL2 파일시스템에 프로젝트 복사 (성능 향상)
+cp -r /mnt/c/path/to/New-mopj-project-main ~/mopj-project
+cd ~/mopj-project
+
+# Docker Compose 실행
+docker-compose up -d
+```
+
+#### 4. WSL2 성능 최적화
+**`.wslconfig` 파일 생성** (Windows 사용자 홈 디렉토리):
+```ini
+[wsl2]
+memory=8GB          # RAM 할당량 (시스템 RAM의 50-70%)
+processors=4        # CPU 코어 수
+swap=2GB           # 스왑 메모리
+localhostForwarding=true
+```
+
+#### 5. 네트워크 접속
+- **브라우저에서 접속**: `http://localhost` 또는 `http://127.0.0.1`
+- **WSL2 IP로 접속**: `http://$(hostname -I | awk '{print $1}')`
+
+#### ⚠️ WSL2 주의사항
+- **파일 성능**: Windows 파일시스템(`/mnt/c/`)보다 WSL2 네이티브 파일시스템(`~/`)에서 더 빠른 성능
+- **메모리 관리**: `.wslconfig`로 메모리 사용량 제한 권장
+- **Docker 리소스**: GPU 사용 시 WSL2에서 CUDA 지원 확인 필요
+
 ## 📊 사용 방법
 
 ### 1. 데이터 업로드
@@ -258,9 +309,7 @@ New-mopj-project-main/
 
 ## 📞 지원 및 문의
 
-- 📧 이메일: [문의 이메일]
-- 📖 문서: [링크]
-- 🐛 버그 리포트: [GitHub Issues]
+- 📧 이메일: [jsjong98@skku.edu]
 
 ---
 
