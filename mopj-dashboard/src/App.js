@@ -1504,6 +1504,14 @@ const App = () => {
     }
   };
 
+  // 브랜드 색상 정의
+  const brandColors = {
+    primary: '#064975', // PANTONE 2955C (RGB 6, 73, 117)
+    secondary: '#8E8E93', // PANTONE 877C (회색)
+    primaryLight: '#0B5A8A', // 조금 더 밝은 primary
+    primaryDark: '#04395E', // 조금 더 어두운 primary
+  };
+
   // 앱 전체에서 사용할 스타일 정의 (수정됨)
   const styles = {
     appContainer: {
@@ -1591,7 +1599,16 @@ const App = () => {
     },
     titleText: {
       ...typography.sectionTitle,
-      color: '#1f2937'
+      color: '#1f2937',
+      margin: 0,
+      lineHeight: '1.2'
+    },
+    subtitleText: {
+      ...typography.helper,
+      color: '#6b7280',
+      margin: '0.25rem 0 0 0',
+      fontSize: '0.8rem',
+      fontStyle: 'italic'
     },
     subTabContainer: {
       backgroundColor: '#ffffff',
@@ -1649,8 +1666,8 @@ const App = () => {
       display: 'flex',
       alignItems: 'center',
       gap: '0.25rem',
-      backgroundColor: '#dbeafe',
-      color: '#1e40af',
+      backgroundColor: '#E8F0F8',
+      color: brandColors.primary,
       padding: '0.25rem 0.75rem',
       borderRadius: '0.375rem',
       cursor: 'pointer',
@@ -1771,11 +1788,92 @@ const App = () => {
       }
     },
     footer: {
-      backgroundColor: '#f3f4f6',
-      padding: '1rem',
+      backgroundColor: '#ffffff',
+      borderTop: '1px solid #e5e7eb',
+      color: '#374151',
+      padding: '2.5rem 1.5rem 1.5rem 1.5rem'
+    },
+    footerContent: {
+      maxWidth: '1200px',
+      margin: '0 auto'
+    },
+    footerMain: {
+      display: 'flex',
+      justifyContent: 'space-evenly',
+      alignItems: 'center',
+      marginBottom: '1.5rem',
+      flexWrap: windowWidth < 768 ? 'wrap' : 'nowrap',
+      gap: windowWidth < 768 ? '1.5rem' : '3rem',
+      minHeight: '100px',
+      padding: '0 2rem'
+    },
+    
+    footerLogoText: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '0.25rem',
       textAlign: 'center',
+      flex: '1 1 auto',
+      minWidth: '300px',
+      maxWidth: '400px'
+    },
+    footerSubtitle: {
+      ...typography.small,
       color: '#6b7280',
-      ...typography.helper
+      fontStyle: 'italic'
+    },
+
+    footerStatus: {
+      ...typography.helper,
+      color: '#374151',
+      backgroundColor: '#f3f4f6',
+      padding: '0.75rem 1.5rem',
+      borderRadius: '0.375rem',
+      marginTop: '0.5rem',
+      textAlign: 'center',
+      minWidth: '160px',
+      whiteSpace: 'nowrap'
+    },
+
+    footerSkkuLogo: {
+      height: '150px',
+      width: 'auto',
+      flex: '0 0 auto'
+    },
+    footerIpseLogo: {
+      height: '85px',
+      width: 'auto',
+      flex: '0 0 auto'
+    },
+    footerUniversity: {
+      marginBottom: '0.5rem'
+    },
+    universityInfo: {
+      ...typography.helper,
+      color: '#374151',
+      fontWeight: '500'
+    },
+    footerDevelopers: {
+      ...typography.helper,
+      color: '#6b7280',
+      marginBottom: '0.5rem'
+    },
+    footerUniversityInfo: {
+      display: 'flex',
+      flexDirection: 'column',
+      textAlign: 'center',
+      gap: '0.25rem',
+      ...typography.helper,
+      color: '#6b7280',
+      flex: '1 1 auto',
+      minWidth: '200px'
+    },
+    footerCopyright: {
+      ...typography.small,
+      color: '#9ca3af',
+      textAlign: 'center',
+      borderTop: '1px solid #f3f4f6',
+      paddingTop: '1rem'
     },
     helpText: {
       marginTop: '0.5rem',
@@ -1792,8 +1890,8 @@ const App = () => {
       cursor: 'pointer',
       fontWeight: isActive ? '500' : 'normal',
       ...typography.content,
-      color: isActive ? '#2563eb' : '#6b7280',
-      borderBottom: isActive ? '2px solid #2563eb' : 'none',
+      color: isActive ? brandColors.primary : brandColors.secondary,
+      borderBottom: isActive ? `2px solid ${brandColors.primary}` : 'none',
       display: 'flex',
       alignItems: 'center',
       gap: '0.5rem'
@@ -1821,7 +1919,7 @@ const App = () => {
     previewText: {
       ...typography.helper,
       fontWeight: '500',
-      color: '#1e40af',
+      color: brandColors.primary,
       margin: '0 0 0.25rem 0'
     },
     previewHelpText: {
@@ -1857,24 +1955,66 @@ const App = () => {
     welcomeCard: {
       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
       borderRadius: '1rem',
-      padding: '3rem 2rem',
+      padding: '2rem 1.5rem',
       color: 'white',
       textAlign: 'center'
     },
     welcomeContent: {
-      maxWidth: '800px',
-      margin: '0 auto'
+      maxWidth: '1400px',
+      margin: '0 auto',
+      width: '100%'
     },
     welcomeTitle: {
       ...typography.mainTitle,
+      fontSize: windowWidth < 768 ? '2rem' : '2.5rem',
       marginBottom: '1rem',
-      whiteSpace: windowWidth < 768 ? 'normal' : 'nowrap',
+      whiteSpace: 'normal',
       textAlign: 'center'
     },
     welcomeSubtitle: {
       ...typography.content,
-      fontSize: '1.125rem', // content보다 약간 크게 (홈페이지 전용)
-      opacity: '0.9'
+      fontSize: '1.25rem',
+      opacity: '0.95',
+      marginBottom: '1rem',
+      textAlign: 'center',
+      maxWidth: '1200px',
+      margin: '0 auto 1rem auto',
+      fontWeight: '600'
+    },
+    welcomeDescription2: {
+      ...typography.content,
+      fontSize: '1.1rem',
+      opacity: '0.85',
+      marginBottom: '1.5rem',
+      textAlign: 'center',
+      maxWidth: '1200px',
+      margin: '0 auto 1.5rem auto',
+      fontStyle: 'italic'
+    },
+    welcomeDescription: {
+      backgroundColor: 'rgba(255, 255, 255, 0.1)',
+      borderRadius: '1rem',
+      padding: '2rem 1.5rem',
+      marginTop: '1.5rem',
+      width: '100%',
+      maxWidth: '1400px',
+      margin: '1.5rem auto 0 auto'
+    },
+    acronymTitle: {
+      ...typography.cardTitle,
+      color: 'white',
+      marginBottom: '1rem',
+      textAlign: 'center'
+    },
+    acronymGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))',
+      gap: '1.5rem',
+      fontSize: '1.3rem',
+      lineHeight: '1.6',
+      maxWidth: '1600px',
+      margin: '0 auto',
+      padding: '1rem'
     },
     featuresGrid: {
       display: 'grid',
@@ -1915,11 +2055,11 @@ const App = () => {
       gap: '0.5rem',
       alignItems: 'center'
     },
-    highlight: {
-      ...typography.helper,
-      color: '#2563eb',
-      fontWeight: '500'
-    },
+          highlight: {
+        ...typography.helper,
+        color: brandColors.primary,
+        fontWeight: '500'
+      },
     modelInfoCard: {
       backgroundColor: 'white',
       borderRadius: '1rem',
@@ -1938,12 +2078,12 @@ const App = () => {
       gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
       gap: '2rem'
     },
-    modelFeature: {
-      padding: '1.5rem',
-      backgroundColor: '#f9fafb',
-      borderRadius: '0.75rem',
-      borderLeft: '4px solid #2563eb'
-    },
+          modelFeature: {
+        padding: '1.5rem',
+        backgroundColor: '#f9fafb',
+        borderRadius: '0.75rem',
+        borderLeft: `4px solid ${brandColors.primary}`
+      },
     guideCard: {
       backgroundColor: 'white',
       borderRadius: '1rem',
@@ -1967,19 +2107,19 @@ const App = () => {
       alignItems: 'flex-start',
       gap: '1rem'
     },
-    stepNumber: {
-      width: '2.5rem',
-      height: '2.5rem',
-      backgroundColor: '#2563eb',
-      color: 'white',
-      borderRadius: '50%',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontWeight: '600',
-      fontSize: '1.125rem',
-      flexShrink: 0
-    },
+          stepNumber: {
+        width: '2.5rem',
+        height: '2.5rem',
+        backgroundColor: brandColors.primary,
+        color: 'white',
+        borderRadius: '50%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontWeight: '600',
+        fontSize: '1.125rem',
+        flexShrink: 0
+      },
     stepContent: {
       flex: 1
     }
@@ -2003,7 +2143,10 @@ const App = () => {
               }}
               onClick={() => setSystemTab('home')}
             />
-            <h1 style={styles.titleText}>롯데케미칼 MOPJ 가격 예측 및 구매 전략 대시보드</h1>
+            <div>
+              <h1 style={styles.titleText}>INSIGHT AI</h1>
+              <p style={styles.subtitleText}>Intelligent Naphtha-price Signal & Investment Guidance Helper Tool</p>
+            </div>
           </div>
           <div style={styles.headerTabs}>
             <div 
@@ -2117,10 +2260,25 @@ const App = () => {
             {/* 웰컴 섹션 */}
             <div style={styles.welcomeCard}>
               <div style={styles.welcomeContent}>
-                <h2 style={styles.welcomeTitle}>MOPJ 가격 예측 시스템에 오신 것을 환영합니다</h2>
+                <h2 style={styles.welcomeTitle}>INSIGHT AI</h2>
                 <p style={styles.welcomeSubtitle}>
                   MOPJ(Mean Of Platts Japan) 가격을 AI 딥러닝 기술로 정확하게 예측하는 전문 시스템입니다.
                 </p>
+                <p style={styles.welcomeDescription2}>
+                  'INSIGHT Artificial Intelligence': 깊이 있는 데이터 통찰로 투자 결정을 지원하는 나프타 가격 예측 AI 시스템
+                </p>
+                <div style={styles.welcomeDescription}>
+                  <h3 style={styles.acronymTitle}>INSIGHT AI란?</h3>
+                  <div style={styles.acronymGrid}>
+                    <div><strong>I</strong>ntelligent - 지능적인 AI 분석</div>
+                    <div><strong>N</strong>aphtha-price - 나프타(MOPJ) 가격 전문</div>
+                    <div><strong>S</strong>ignal - 시장 신호 감지</div>
+                    <div><strong>I</strong>nvestment - 투자 결정 지원</div>
+                    <div><strong>G</strong>uidance - 전문적 가이던스</div>
+                    <div><strong>H</strong>elper - 사용자 친화적 도우미</div>
+                    <div><strong>T</strong>ool - 실용적 분석 도구</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2128,7 +2286,7 @@ const App = () => {
             <div style={styles.featuresGrid}>
               <div style={styles.featureCard}>
                 <div style={styles.featureIcon}>
-                  <TrendingUp size={32} style={{ color: '#2563eb' }} />
+                  <TrendingUp size={32} style={{ color: brandColors.primary }} />
                 </div>
                 <h3 style={styles.featureTitle}>단일 날짜 예측</h3>
                 <p style={styles.featureDescription}>
@@ -2194,7 +2352,7 @@ const App = () => {
             {/* 모델 정보 섹션 */}
             <div style={styles.modelInfoCard}>
               <h3 style={styles.modelTitle}>
-                <Award size={24} style={{ color: '#f59e0b', marginRight: '0.5rem' }} />
+                <Award size={24} style={{ color: brandColors.primary, marginRight: '0.5rem' }} />
                 AI 딥러닝 예측 모델
               </h3>
               <div style={styles.modelDetails}>
@@ -2220,7 +2378,7 @@ const App = () => {
             {/* 사용 방법 안내 */}
             <div style={styles.guideCard}>
               <h3 style={styles.guideTitle}>
-                <Database size={24} style={{ color: '#2563eb', marginRight: '0.5rem' }} />
+                <Database size={24} style={{ color: brandColors.primary, marginRight: '0.5rem' }} />
                 사용 방법
               </h3>
               <div style={styles.guideSteps}>
@@ -2254,6 +2412,8 @@ const App = () => {
                 </div>
               </div>
             </div>
+
+
           </div>
         )}
 
@@ -3332,7 +3492,47 @@ const App = () => {
       </main>
 
       <footer style={styles.footer}>
-        © 2025 MOPJ 예측 시스템 | 예측 시작일: {currentDate || '데이터 없음'}
+        <div style={styles.footerContent}>
+          <div style={styles.footerMain}>
+            {/* SKKU 로고 */}
+            <img 
+              src={`${process.env.PUBLIC_URL}/SKKU_logo.png`} 
+              alt="성균관대학교 로고" 
+              style={styles.footerSkkuLogo}
+              title="Sungkyunkwan University"
+            />
+            
+            {/* IPSE 로고 */}
+            <img 
+              src={`${process.env.PUBLIC_URL}/IPSE_logo.png`} 
+              alt="IPSE 연구실 로고" 
+              style={styles.footerIpseLogo}
+              title="Intelligence Process System Engineering, SKKU"
+            />
+            
+            {/* INSIGHT AI */}
+            <div style={styles.footerLogoText}>
+              <strong>INSIGHT AI</strong>
+              <span style={styles.footerSubtitle}>Intelligent Naphtha-price Signal & Investment Guidance Helper Tool</span>
+            </div>
+            
+            {/* 대학교 및 연구실 정보 */}
+            <div style={styles.footerUniversityInfo}>
+              <div>성균관대학교 화학공학과</div>
+              <div>지능형공정시스템 연구실 (IPSE)</div>
+              <div>개발자: 오종환, 최희현</div>
+            </div>
+            
+            {/* 예측 시작일 */}
+            <div style={styles.footerStatus}>
+              예측 시작일: {currentDate || '데이터 없음'}
+            </div>
+          </div>
+          
+          <div style={styles.footerCopyright}>
+            © 2025 Intelligence Process System Engineering Laboratory, Sungkyunkwan University. All rights reserved.
+          </div>
+        </div>
       </footer>
     </div>
       );
