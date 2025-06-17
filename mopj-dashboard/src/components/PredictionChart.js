@@ -64,19 +64,47 @@ const PredictionChart = ({ data, title }) => {
           />
           <YAxis domain={['auto', 'auto']} />
           <Tooltip
-            formatter={(value, name) => {
+            formatter={(value, name, props) => {
+              // 디버깅을 위한 로그
+              console.log('🔍 [TOOLTIP] Debug info:', { value, name, props });
+              
               if (value === null || value === undefined) {
                 return ['데이터 없음', name === "Prediction" ? "예측 가격" : "실제 가격"];
               }
+              
+              // 데이터 키에 따라 정확한 라벨 표시
+              let label = "";
+              if (name === "Prediction") {
+                label = "예측 가격";
+              } else if (name === "Actual") {
+                label = "실제 가격";
+              } else {
+                // 기본적으로 예측 가격으로 처리 (안전장치)
+                label = "예측 가격";
+                console.warn('⚠️ [TOOLTIP] Unknown data key:', name, 'treating as prediction');
+              }
+              
               return [
                 `${parseFloat(value).toFixed(2)}`,
-                name === "Prediction" ? "예측 가격" : "실제 가격"
+                label
               ];
             }}
             labelFormatter={(label) => `날짜: ${formatDate(label)}`}
           />
           <Legend />
-          {/* 실제 가격 라인 (데이터가 있을 때만 표시) */}
+          
+          {/* 예측 가격 라인 (메인 - 먼저 표시하여 범례 상단에 위치) */}
+          <Line 
+            type="monotone" 
+            dataKey="Prediction" 
+            stroke="#ef4444" 
+            strokeWidth={2} 
+            name="예측 가격" 
+            dot={{ r: 4 }}
+            strokeDasharray="5 5"
+          />
+          
+          {/* 실제 가격 라인 (참조용 - 나중에 표시하여 범례 하단에 위치) */}
           {data.some(item => item.Actual !== null && item.Actual !== undefined) && (
             <Line 
               type="monotone" 
@@ -88,17 +116,6 @@ const PredictionChart = ({ data, title }) => {
               activeDot={{ r: 6 }}
             />
           )}
-          
-          {/* 예측 가격 라인 (항상 표시) */}
-          <Line 
-            type="monotone" 
-            dataKey="Prediction" 
-            stroke="#ef4444" 
-            strokeWidth={2} 
-            name="예측 가격" 
-            dot={{ r: 4 }}
-            strokeDasharray="5 5"
-          />
         </LineChart>
       </ResponsiveContainer>
     </div>
