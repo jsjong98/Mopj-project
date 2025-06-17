@@ -56,7 +56,7 @@ MOPJ(Mean Of Platts Japan) 가격 예측을 위한 전문적인 웹 애플리케
 1. **저장소 클론**
 ```bash
 git clone <repository-url>
-cd New-mopj-project-main
+cd Mopj-project
 ```
 
 2. **백엔드 설정 및 실행**
