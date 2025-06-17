@@ -1811,18 +1811,21 @@ const App = () => {
       padding: '2.5rem 1.5rem 1.5rem 1.5rem'
     },
     footerContent: {
-      maxWidth: '1200px',
-      margin: '0 auto'
+      width: '100%',
+      margin: '0'
     },
     footerMain: {
       display: 'flex',
-      justifyContent: 'space-evenly',
+      justifyContent: 'flex-start',
       alignItems: 'center',
       marginBottom: '1.5rem',
       flexWrap: windowWidth < 768 ? 'wrap' : 'nowrap',
-      gap: windowWidth < 768 ? '1.5rem' : '3rem',
+      gap: windowWidth < 768 ? '1.5rem' : '2rem',
       minHeight: '100px',
-      padding: '0 2rem'
+      padding: '0 1rem',
+      width: '100%',
+      maxWidth: '1400px',
+      margin: '0 auto 1.5rem auto'
     },
     
     footerLogoText: {
@@ -1852,8 +1855,18 @@ const App = () => {
       whiteSpace: 'nowrap'
     },
 
+    footerInsightAILogo: {
+      height: '65px',
+      width: 'auto',
+      flex: '0 0 auto'
+    },
+    footerLotteChemLogo: {
+      height: '50px',
+      width: 'auto',
+      flex: '0 0 auto'
+    },
     footerSkkuLogo: {
-      height: '150px',
+      height: '140px',
       width: 'auto',
       flex: '0 0 auto'
     },
@@ -2150,10 +2163,10 @@ const App = () => {
         <div style={styles.headerContent}>
           <div style={styles.headerTitle}>
             <img 
-              src={`${process.env.PUBLIC_URL}/Lotte_Chem_logo.png`} 
-              alt="롯데케미칼 로고" 
+              src={`${process.env.PUBLIC_URL}/INSIGHT_AI_Full_logo.png`} 
+              alt="INSIGHT AI 로고" 
               style={{
-                height: '36px',
+                height: '60px',
                 width: 'auto',
                 marginRight: '12px',
                 cursor: 'pointer'
@@ -3523,6 +3536,22 @@ const App = () => {
       <footer style={styles.footer}>
         <div style={styles.footerContent}>
           <div style={styles.footerMain}>
+            {/* INSIGHT AI 로고 */}
+            <img 
+              src={`${process.env.PUBLIC_URL}/INSIGHT_AI_Full_logo.png`} 
+              alt="INSIGHT AI 로고" 
+              style={styles.footerInsightAILogo}
+              title="INSIGHT AI - Intelligent Naphtha-price Signal & Investment Guidance Helper Tool"
+            />
+            
+            {/* 롯데케미칼 로고 */}
+            <img 
+              src={`${process.env.PUBLIC_URL}/Lotte_Chem_logo.png`} 
+              alt="롯데케미칼 로고" 
+              style={styles.footerLotteChemLogo}
+              title="Lotte Chemical Corporation"
+            />
+            
             {/* SKKU 로고 */}
             <img 
               src={`${process.env.PUBLIC_URL}/SKKU_logo.png`} 
@@ -3539,12 +3568,6 @@ const App = () => {
               title="Intelligence Process System Engineering, SKKU"
             />
             
-            {/* INSIGHT AI */}
-            <div style={styles.footerLogoText}>
-              <strong>INSIGHT AI</strong>
-              <span style={styles.footerSubtitle}>Intelligent Naphtha-price Signal & Investment Guidance Helper Tool</span>
-            </div>
-            
             {/* 대학교 및 연구실 정보 */}
             <div style={styles.footerUniversityInfo}>
               <div>성균관대학교 화학공학과</div>
@@ -3553,7 +3576,11 @@ const App = () => {
             </div>
             
             {/* 예측 시작일 */}
-            <div style={styles.footerStatus}>
+            <div style={{
+              ...styles.footerStatus,
+              minWidth: '150px',
+              textAlign: 'center'
+            }}>
               예측 시작일: {currentDate || '데이터 없음'}
             </div>
           </div>
