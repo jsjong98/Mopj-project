@@ -403,12 +403,29 @@ const App = () => {
       console.log(`✅ [CACHE] ${cacheMessage}`);
       
       // 사용자에게 캐시 정보 알림 (선택적)
-      if (data.cache_info.cache_type === 'exact') {
-        console.log('🎉 [CACHE] Exact match - predictions will be much faster!');
-      } else if (data.cache_info.cache_type === 'extension') {
-        const extInfo = data.cache_info.extension_info;
-        console.log(`📈 [CACHE] Data extension detected: +${extInfo.new_rows_count} new rows from ${extInfo.old_end_date} to ${extInfo.new_end_date}`);
-      }
+                            if (data.cache_info.cache_type === 'exact' || data.cache_info.cache_type === 'exact_with_range') {
+                        console.log('🎉 [CACHE] Exact match - predictions will be much faster!');
+                        if (data.cache_info.cache_type === 'exact_with_range') {
+                          console.log('🎯 [CACHE] Same file with matching data range!');
+                        }
+                      } else if (data.cache_info.cache_type === 'extension') {
+                        const extInfo = data.cache_info.extension_info;
+                        if (extInfo.new_rows_count) {
+                          console.log(`📈 [CACHE] Data extension detected: +${extInfo.new_rows_count} new rows from ${extInfo.old_end_date} to ${extInfo.new_end_date}`);
+                        } else {
+                          console.log(`📈 [CACHE] Data extension detected`);
+                        }
+                      } else if (data.cache_info.cache_type === 'near_complete') {
+                        const coverage = data.cache_info.compatibility_info?.best_coverage || 0;
+                        console.log(`🎯 [CACHE] Near complete cache match with ${(coverage * 100).toFixed(1)}% coverage!`);
+                      } else if (data.cache_info.cache_type === 'multi_cache') {
+                        const totalCaches = data.cache_info.compatibility_info?.total_compatible_caches || 0;
+                        const coverage = data.cache_info.compatibility_info?.best_coverage || 0;
+                        console.log(`🔗 [CACHE] Multi-cache optimization: ${totalCaches} caches with ${(coverage * 100).toFixed(1)}% coverage!`);
+                      } else if (data.cache_info.cache_type === 'partial') {
+                        const coverage = data.cache_info.compatibility_info?.best_coverage || 0;
+                        console.log(`📊 [CACHE] Partial cache match with ${(coverage * 100).toFixed(1)}% coverage - will accelerate predictions!`);
+                      }
     } else {
       console.log('📝 [CACHE] New data file - cache will be created after predictions');
     }
@@ -2507,11 +2524,23 @@ const App = () => {
                       </div>
                       <div style={{ ...typography.small, color: '#6b7280' }}>
                         {fileInfo.cache_info.message}
-                        {fileInfo.cache_info.cache_type === 'exact' && (
+                        {(fileInfo.cache_info.cache_type === 'exact' || fileInfo.cache_info.cache_type === 'exact_with_range') && (
                           <><br/>✨ <strong>기존 예측 결과를 즉시 불러올 수 있습니다!</strong></>
+                        )}
+                        {fileInfo.cache_info.cache_type === 'exact_with_range' && (
+                          <><br/>🎯 <strong>동일한 데이터 범위로 학습된 캐시를 발견했습니다!</strong></>
                         )}
                         {fileInfo.cache_info.cache_type === 'extension' && (
                           <><br/>🚀 <strong>기존 캐시를 활용하여 새 부분만 계산합니다!</strong></>
+                        )}
+                        {fileInfo.cache_info.cache_type === 'near_complete' && (
+                          <><br/>🎯 <strong>거의 완전한 캐시 매치로 예측이 크게 가속화됩니다!</strong></>
+                        )}
+                        {fileInfo.cache_info.cache_type === 'multi_cache' && (
+                          <><br/>🔗 <strong>다중 캐시 시스템으로 최적화된 예측을 제공합니다!</strong></>
+                        )}
+                        {fileInfo.cache_info.cache_type === 'partial' && (
+                          <><br/>📊 <strong>부분 캐시 활용으로 예측 시간이 단축됩니다!</strong></>
                         )}
                       </div>
                     </div>
