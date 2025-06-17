@@ -500,68 +500,275 @@ def check_data_extension(old_file_path, new_file_path):
             'validation_details': {'error': str(e)}
         }
 
-def find_compatible_cache_file(new_file_path):
+def find_existing_cache_range(file_path):
     """
-    새 파일과 호환되는 기존 캐시를 찾는 함수
+    기존 파일의 캐시에서 사용된 데이터 범위 정보를 찾는 함수
+    
+    Returns:
+    --------
+    dict or None: {'start_date': 'YYYY-MM-DD', 'cutoff_date': 'YYYY-MM-DD'} 또는 None
+    """
+    try:
+        # 파일에 대응하는 캐시 디렉토리 찾기
+        cache_dirs = get_file_cache_dirs(file_path)
+        predictions_dir = Path(cache_dirs['predictions'])
+        
+        if not predictions_dir.exists():
+            return None
+            
+        # 최근 메타 파일에서 데이터 범위 정보 확인
+        meta_files = list(predictions_dir.glob("*_meta.json"))
+        if not meta_files:
+            return None
+            
+        # 가장 최근 메타 파일 선택
+        latest_meta = max(meta_files, key=lambda f: f.stat().st_mtime)
+        
+        with open(latest_meta, 'r', encoding='utf-8') as f:
+            meta_data = json.load(f)
+            
+        # 데이터 범위 정보 추출
+        model_config = meta_data.get('model_config', {})
+        lstm_config = model_config.get('lstm', {})
+        
+        start_date = lstm_config.get('data_start_date')
+        cutoff_date = lstm_config.get('data_cutoff_date') or meta_data.get('data_end_date')
+        
+        if start_date and cutoff_date:
+            return {
+                'start_date': start_date,
+                'cutoff_date': cutoff_date,
+                'meta_file': str(latest_meta)
+            }
+            
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Failed to find cache range for {file_path}: {str(e)}")
+        return None
+
+def find_compatible_cache_file(new_file_path, intended_data_range=None):
+    """
+    새 파일과 호환되는 기존 캐시를 찾는 함수 (데이터 범위 고려)
+    
+    🔧 핵심 개선:
+    - 파일 내용 + 사용 데이터 범위를 모두 고려
+    - 같은 파일이라도 다른 데이터 범위면 새 예측으로 인식
+    - 사용자 의도를 반영한 스마트 캐시 매칭
+    
+    Parameters:
+    -----------
+    new_file_path : str
+        새 파일 경로
+    intended_data_range : dict, optional
+        사용자가 의도한 데이터 범위 {'start_date': 'YYYY-MM-DD', 'cutoff_date': 'YYYY-MM-DD'}
     
     Returns:
     --------
     dict: {
         'found': bool,
-        'cache_type': str,  # 'exact', 'extension', None
-        'cache_file': str,
-        'extension_info': dict
+        'cache_type': str,  # 'exact_with_range', 'extension', 'partial', 'range_mismatch'
+        'cache_files': list,
+        'compatibility_info': dict
     }
     """
     try:
-        # 새 파일의 데이터 해시
+        # 새 파일의 데이터 분석
+        new_df = pd.read_csv(new_file_path)
+        if 'Date' not in new_df.columns:
+            return {'found': False, 'cache_type': None, 'reason': 'No Date column'}
+            
+        new_df['Date'] = pd.to_datetime(new_df['Date'])
+        new_start_date = new_df['Date'].min()
+        new_end_date = new_df['Date'].max()
         new_hash = get_data_content_hash(new_file_path)
-        if not new_hash:
-            return {'found': False, 'cache_type': None}
         
-        # uploads 폴더의 모든 CSV 파일 확인
+        logger.info(f"🔍 [ENHANCED_CACHE] Analyzing new file:")
+        logger.info(f"  📅 Full date range: {new_start_date.strftime('%Y-%m-%d')} ~ {new_end_date.strftime('%Y-%m-%d')}")
+        logger.info(f"  📊 Records: {len(new_df)}")
+        logger.info(f"  🔑 Hash: {new_hash[:12] if new_hash else 'None'}...")
+        
+        # 사용자 의도 데이터 범위 확인
+        if intended_data_range:
+            intended_start = pd.to_datetime(intended_data_range.get('start_date', new_start_date))
+            intended_cutoff = pd.to_datetime(intended_data_range.get('cutoff_date', new_end_date))
+            logger.info(f"  🎯 Intended range: {intended_start.strftime('%Y-%m-%d')} ~ {intended_cutoff.strftime('%Y-%m-%d')}")
+        else:
+            intended_start = new_start_date
+            intended_cutoff = new_end_date
+            logger.info(f"  🎯 Using full range (no specific intention provided)")
+        
+        compatible_caches = []
+        
+        # 1. uploads 폴더의 파일들 검사 (데이터 범위 고려)
         upload_dir = Path(UPLOAD_FOLDER)
         existing_files = list(upload_dir.glob('*.csv'))
         
-        logger.info(f"🔍 [CACHE] Checking {len(existing_files)} existing files for cache compatibility")
+        logger.info(f"🔍 [ENHANCED_CACHE] Checking {len(existing_files)} upload files with range consideration...")
         
         for existing_file in existing_files:
             if existing_file.name == os.path.basename(new_file_path):
-                continue  # 자기 자신은 제외
-            
+                continue
+                
             try:
-                # 1. 정확한 매치 확인
+                # 파일 해시 확인
                 existing_hash = get_data_content_hash(str(existing_file))
                 if existing_hash == new_hash:
-                    logger.info(f"✅ [CACHE] Found exact match: {existing_file.name}")
+                    logger.info(f"📄 [ENHANCED_CACHE] Same file content found: {existing_file.name}")
+                    
+                    # 🔑 같은 파일이지만 데이터 범위 의도 확인
+                    # 기존 캐시의 데이터 범위 정보를 찾아야 함
+                    existing_cache_range = find_existing_cache_range(str(existing_file))
+                    
+                    if existing_cache_range and intended_data_range:
+                        cache_start = existing_cache_range.get('start_date')
+                        cache_cutoff = existing_cache_range.get('cutoff_date') 
+                        
+                        if cache_start and cache_cutoff:
+                            cache_start = pd.to_datetime(cache_start)
+                            cache_cutoff = pd.to_datetime(cache_cutoff)
+                            
+                            # 데이터 범위 비교
+                            range_match = (
+                                abs((intended_start - cache_start).days) <= 30 and 
+                                abs((intended_cutoff - cache_cutoff).days) <= 30
+                            )
+                            
+                            if range_match:
+                                logger.info(f"✅ [ENHANCED_CACHE] Exact match with same intended range!")
+                                return {
+                                    'found': True,
+                                    'cache_type': 'exact_with_range',
+                                    'cache_files': [str(existing_file)],
+                                    'compatibility_info': {
+                                        'match_type': 'file_hash_and_range',
+                                        'cache_range': existing_cache_range,
+                                        'intended_range': intended_data_range
+                                    }
+                                }
+                            else:
+                                logger.info(f"⚠️ [ENHANCED_CACHE] Same file but different intended range:")
+                                logger.info(f"    💾 Cached range: {cache_start.strftime('%Y-%m-%d')} ~ {cache_cutoff.strftime('%Y-%m-%d')}")
+                                logger.info(f"    🎯 Intended range: {intended_start.strftime('%Y-%m-%d')} ~ {intended_cutoff.strftime('%Y-%m-%d')}")
+                                logger.info(f"    🔄 Will create new cache for different range")
+                                # 같은 파일이지만 다른 범위 의도 → 새 예측 필요
+                                continue
+                    
+                    # 범위 정보가 없으면 기존 로직 적용
+                    logger.info(f"✅ [ENHANCED_CACHE] Exact file match (no range info): {existing_file.name}")
                     return {
                         'found': True,
                         'cache_type': 'exact',
-                        'cache_file': str(existing_file),
-                        'extension_info': None
+                        'cache_files': [str(existing_file)],
+                        'compatibility_info': {'match_type': 'file_hash_only'}
                     }
                 
-                # 2. 확장 파일인지 확인
+                # 확장 파일 확인 (기존 로직 유지)
                 extension_info = check_data_extension(str(existing_file), new_file_path)
                 if extension_info['is_extension']:
-                    logger.info(f"📈 [CACHE] Found extension base: {existing_file.name} (+{extension_info['new_rows_count']} rows)")
+                    logger.info(f"📈 [ENHANCED_CACHE] Found extension base: {existing_file.name}")
                     return {
                         'found': True,
-                        'cache_type': 'extension',
-                        'cache_file': str(existing_file),
-                        'extension_info': extension_info
+                        'cache_type': 'extension', 
+                        'cache_files': [str(existing_file)],
+                        'compatibility_info': extension_info
                     }
                     
             except Exception as e:
-                logger.warning(f"Error checking file {existing_file}: {str(e)}")
+                logger.warning(f"Error checking upload file {existing_file}: {str(e)}")
                 continue
         
-        logger.info("❌ [CACHE] No compatible cache found")
+        # 2. 🔧 캐시 디렉토리의 모든 예측 결과 검사 (신규)
+        cache_root = Path(CACHE_ROOT_DIR)
+        if not cache_root.exists():
+            logger.info("❌ [ENHANCED_CACHE] No cache directory found")
+            return {'found': False, 'cache_type': None}
+            
+        logger.info(f"🔍 [ENHANCED_CACHE] Scanning cache directories...")
+        
+        for file_cache_dir in cache_root.iterdir():
+            if not file_cache_dir.is_dir():
+                continue
+                
+            predictions_dir = file_cache_dir / 'predictions'
+            if not predictions_dir.exists():
+                continue
+                
+            # predictions_index.csv 파일에서 캐시된 예측들의 날짜 범위 확인
+            index_file = predictions_dir / 'predictions_index.csv'
+            if not index_file.exists():
+                continue
+                
+            try:
+                cache_index = pd.read_csv(index_file)
+                if 'data_end_date' not in cache_index.columns:
+                    continue
+                    
+                cache_index['data_end_date'] = pd.to_datetime(cache_index['data_end_date'])
+                cache_start = cache_index['data_end_date'].min()
+                cache_end = cache_index['data_end_date'].max()
+                
+                logger.info(f"  📁 {file_cache_dir.name}: {cache_start.strftime('%Y-%m-%d')} ~ {cache_end.strftime('%Y-%m-%d')} ({len(cache_index)} predictions)")
+                
+                # 날짜 범위 중복 확인
+                overlap_start = max(new_start_date, cache_start)
+                overlap_end = min(new_end_date, cache_end)
+                
+                if overlap_start <= overlap_end:
+                    overlap_days = (overlap_end - overlap_start).days + 1
+                    new_total_days = (new_end_date - new_start_date).days + 1
+                    coverage_ratio = overlap_days / new_total_days
+                    
+                    logger.info(f"    📊 Overlap: {overlap_days} days ({coverage_ratio:.1%} coverage)")
+                    
+                    if coverage_ratio >= 0.7:  # 70% 이상 겹치면 호환 가능
+                        compatible_caches.append({
+                            'cache_dir': str(file_cache_dir),
+                            'predictions_dir': str(predictions_dir),
+                            'coverage_ratio': coverage_ratio,
+                            'overlap_days': overlap_days,
+                            'cache_range': (cache_start, cache_end),
+                            'prediction_count': len(cache_index)
+                        })
+                        
+            except Exception as e:
+                logger.warning(f"Error analyzing cache {file_cache_dir.name}: {str(e)}")
+                continue
+        
+        # 3. 호환 가능한 캐시 결과 처리
+        if compatible_caches:
+            # 커버리지 비율로 정렬 (높은 순)
+            compatible_caches.sort(key=lambda x: x['coverage_ratio'], reverse=True)
+            best_cache = compatible_caches[0]
+            
+            logger.info(f"🎯 [ENHANCED_CACHE] Found {len(compatible_caches)} compatible cache(s)")
+            logger.info(f"  🥇 Best: {Path(best_cache['cache_dir']).name} ({best_cache['coverage_ratio']:.1%} coverage)")
+            
+            if best_cache['coverage_ratio'] >= 0.95:  # 95% 이상이면 거의 완전
+                cache_type = 'near_complete'
+            elif len(compatible_caches) > 1:  # 여러 캐시 조합 가능
+                cache_type = 'multi_cache' 
+            else:
+                cache_type = 'partial'
+                
+            return {
+                'found': True,
+                'cache_type': cache_type,
+                'cache_files': [cache['predictions_dir'] for cache in compatible_caches],
+                'compatibility_info': {
+                    'best_coverage': best_cache['coverage_ratio'],
+                    'total_compatible_caches': len(compatible_caches),
+                    'date_ranges': [(c['cache_range'][0].strftime('%Y-%m-%d'), 
+                                   c['cache_range'][1].strftime('%Y-%m-%d')) for c in compatible_caches]
+                }
+            }
+        
+        logger.info("❌ [ENHANCED_CACHE] No compatible cache found")
         return {'found': False, 'cache_type': None}
         
     except Exception as e:
-        logger.error(f"Cache compatibility check failed: {str(e)}")
-        return {'found': False, 'cache_type': None}
+        logger.error(f"Enhanced cache compatibility check failed: {str(e)}")
+        return {'found': False, 'cache_type': None, 'error': str(e)}
 
 # 데이터 로딩 및 전처리 함수
 def load_data(file_path, model_type=None):
@@ -7008,8 +7215,14 @@ def upload_file():
                 logger.warning(f"Data analysis failed: {str(e)}")
                 data_info = {'warning': f'Data analysis failed: {str(e)}'}
             
-            # 🔍 캐시 호환성 확인 (완화된 검증)
-            cache_result = find_compatible_cache_file(temp_filepath)
+            # 🔍 캐시 호환성 확인 (데이터 범위 고려)
+            # 사용자의 의도된 데이터 범위 추정 (기본값: 2022년부터 LSTM, 전체 데이터 VARMAX)
+            intended_range = {
+                'start_date': '2022-01-01',  # LSTM 권장 시작점
+                'cutoff_date': data_info.get('end_date', end_date.strftime('%Y-%m-%d'))
+            }
+            
+            cache_result = find_compatible_cache_file(temp_filepath, intended_range)
             
             response_data = {
                 'success': True,
@@ -7030,31 +7243,65 @@ def upload_file():
             
             if cache_result['found']:
                 cache_type = cache_result['cache_type']
-                cache_file = cache_result['cache_file']
+                cache_files = cache_result.get('cache_files', [])
+                compatibility_info = cache_result.get('compatibility_info', {})
                 
                 if cache_type == 'exact':
-                    response_data['cache_info']['message'] = f"동일한 데이터 발견! 기존 캐시를 활용합니다. ({os.path.basename(cache_file)})"
+                    cache_file = cache_files[0] if cache_files else None
+                    response_data['cache_info']['message'] = f"동일한 데이터 발견! 기존 캐시를 활용합니다. ({os.path.basename(cache_file) if cache_file else 'Unknown'})"
                     response_data['cache_info']['compatible_file'] = cache_file
                     logger.info(f"✅ [CACHE] Exact match found: {cache_file}")
                     
                 elif cache_type == 'extension':
-                    ext_info = cache_result['extension_info']
-                    response_data['cache_info']['message'] = f"데이터 확장 감지! {ext_info['new_rows_count']}개 새 행이 추가되었습니다. 기존 캐시를 활용합니다."
+                    cache_file = cache_files[0] if cache_files else None
+                    if 'new_rows_count' in compatibility_info:
+                        response_data['cache_info']['message'] = f"데이터 확장 감지! {compatibility_info['new_rows_count']}개 새 행이 추가되었습니다. 기존 캐시를 활용합니다."
+                    else:
+                        response_data['cache_info']['message'] = "데이터 확장이 감지되었습니다. 기존 캐시를 활용합니다."
                     response_data['cache_info']['compatible_file'] = cache_file
-                    response_data['cache_info']['extension_info'] = ext_info
-                    logger.info(f"📈 [CACHE] Extension detected: +{ext_info['new_rows_count']} rows from {cache_file}")
+                    response_data['cache_info']['extension_info'] = compatibility_info
+                    logger.info(f"📈 [CACHE] Extension detected from {cache_file}")
                     
-                # 호환 파일을 실제 파일 경로로 설정 (캐시 활용을 위해)
-                response_data['filepath'] = cache_file
-                response_data['filename'] = os.path.basename(cache_file)
+                elif cache_type in ['partial', 'near_complete', 'multi_cache']:
+                    best_coverage = compatibility_info.get('best_coverage', 0)
+                    total_caches = compatibility_info.get('total_compatible_caches', len(cache_files))
+                    
+                    if cache_type == 'near_complete':
+                        response_data['cache_info']['message'] = f"🎯 거의 완전한 캐시 매치! ({best_coverage:.1%} 커버리지) 기존 예측 결과를 최대한 활용합니다."
+                    elif cache_type == 'multi_cache':
+                        response_data['cache_info']['message'] = f"🔗 다중 캐시 발견! {total_caches}개 캐시에서 {best_coverage:.1%} 커버리지로 예측을 가속화합니다."
+                    else:  # partial
+                        response_data['cache_info']['message'] = f"📊 부분 캐시 매치! ({best_coverage:.1%} 커버리지) 일부 예측 결과를 재활용합니다."
+                    
+                    response_data['cache_info']['compatible_files'] = cache_files
+                    response_data['cache_info']['compatibility_info'] = compatibility_info
+                    logger.info(f"🎯 [ENHANCED_CACHE] {cache_type} cache found: {total_caches} caches, {best_coverage:.1%} coverage")
                 
-                # 임시 파일 삭제 (필요시)
-                if temp_filepath != cache_file:
-                    try:
-                        os.remove(temp_filepath)
-                        logger.info(f"🗑️ [CLEANUP] Temporary file removed: {temp_filename}")
-                    except:
-                        pass
+                # 기존 파일 경로 유지 (스마트 캐시는 예측 시점에서 처리)
+                if cache_type in ['exact', 'extension'] and cache_files:
+                    cache_file = cache_files[0]
+                    response_data['filepath'] = cache_file
+                    response_data['filename'] = os.path.basename(cache_file)
+                    
+                    # 임시 파일 삭제 (필요시)
+                    if temp_filepath != cache_file:
+                        try:
+                            os.remove(temp_filepath)
+                            logger.info(f"🗑️ [CLEANUP] Temporary file removed: {temp_filename}")
+                        except:
+                            pass
+                else:
+                    # 새 파일은 유지 (부분/다중 캐시의 경우)
+                    content_hash = get_data_content_hash(temp_filepath)
+                    final_filename = f"data_{content_hash}.csv" if content_hash else temp_filename
+                    final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
+                    
+                    if temp_filepath != final_filepath:
+                        shutil.move(temp_filepath, final_filepath)
+                        logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
+                        
+                    response_data['filepath'] = final_filepath
+                    response_data['filename'] = final_filename
             else:
                 # 새 파일인 경우 정식 파일명으로 변경
                 content_hash = get_data_content_hash(temp_filepath)
