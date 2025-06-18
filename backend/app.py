@@ -1749,13 +1749,110 @@ def select_features_from_groups(df, variable_groups, target_col='MOPJ', vif_thre
     
     return final_features, selection_process
 
+def find_compatible_hyperparameters(current_file_path, current_period):
+    """
+    현재 파일이 기존 파일의 확장인 경우, 기존 파일의 호환 가능한 하이퍼파라미터를 찾는 함수
+    
+    Parameters:
+    -----------
+    current_file_path : str
+        현재 파일 경로
+    current_period : str
+        현재 예측 기간
+        
+    Returns:
+    --------
+    dict or None: {
+        'hyperparams': dict,
+        'source_file': str,
+        'extension_info': dict
+    } 또는 None (호환 가능한 하이퍼파라미터가 없을 경우)
+    """
+    try:
+        # uploads 폴더의 다른 파일들을 확인
+        upload_dir = Path(UPLOAD_FOLDER)
+        existing_files = [f for f in upload_dir.glob('*.csv') if str(f) != current_file_path]
+        
+        for existing_file in existing_files:
+            try:
+                # 데이터 확장 관계 확인
+                extension_result = check_data_extension(str(existing_file), current_file_path)
+                
+                if extension_result.get('is_extension', False):
+                    logger.info(f"🔍 [HYPERPARAMS_SEARCH] 확장 관계 발견: {existing_file.name} -> {Path(current_file_path).name}")
+                    logger.info(f"    📈 Extension type: {extension_result.get('validation_details', {}).get('extension_type', 'Unknown')}")
+                    logger.info(f"    ➕ New rows: {extension_result.get('new_rows_count', 0)}")
+                    
+                    # 기존 파일의 하이퍼파라미터 캐시 확인
+                    existing_cache_dirs = get_file_cache_dirs(str(existing_file))
+                    existing_models_dir = existing_cache_dirs['models']
+                    
+                    if os.path.exists(existing_models_dir):
+                        # 해당 기간의 하이퍼파라미터 파일 찾기
+                        hyperparams_pattern = f"hyperparams_kfold_{current_period.replace('-', '_')}.json"
+                        hyperparams_file = os.path.join(existing_models_dir, hyperparams_pattern)
+                        
+                        if os.path.exists(hyperparams_file):
+                            try:
+                                with open(hyperparams_file, 'r') as f:
+                                    hyperparams = json.load(f)
+                                
+                                logger.info(f"✅ [HYPERPARAMS_SEARCH] 기존 파일에서 호환 하이퍼파라미터 발견!")
+                                logger.info(f"    📁 Source file: {existing_file.name}")
+                                logger.info(f"    📊 Hyperparams file: {hyperparams_pattern}")
+                                
+                                return {
+                                    'hyperparams': hyperparams,
+                                    'source_file': str(existing_file),
+                                    'extension_info': extension_result,
+                                    'period': current_period
+                                }
+                                
+                            except Exception as e:
+                                logger.warning(f"기존 하이퍼파라미터 파일 로드 실패 ({existing_file.name}): {str(e)}")
+                        else:
+                            # 해당 기간의 하이퍼파라미터가 없을 경우, 다른 기간의 하이퍼파라미터를 찾아보기
+                            logger.info(f"🔍 [HYPERPARAMS_SEARCH] {current_period} 기간의 하이퍼파라미터가 없습니다. 다른 기간을 탐색합니다...")
+                            
+                            # 모든 하이퍼파라미터 파일 찾기
+                            for hyperparam_file in Path(existing_models_dir).glob("hyperparams_kfold_*.json"):
+                                try:
+                                    with open(hyperparam_file, 'r') as f:
+                                        hyperparams = json.load(f)
+                                    
+                                    period_from_file = hyperparam_file.stem.replace('hyperparams_kfold_', '').replace('_', '-')
+                                    logger.info(f"🔄 [HYPERPARAMS_SEARCH] 대체 하이퍼파라미터 발견 (기간: {period_from_file})")
+                                    
+                                    return {
+                                        'hyperparams': hyperparams,
+                                        'source_file': str(existing_file),
+                                        'extension_info': extension_result,
+                                        'period': period_from_file,
+                                        'alternative_period': True
+                                    }
+                                    
+                                except Exception as e:
+                                    logger.warning(f"하이퍼파라미터 파일 로드 실패 ({hyperparam_file}): {str(e)}")
+                                    continue
+                    
+            except Exception as e:
+                logger.warning(f"파일 확장 관계 확인 실패 ({existing_file.name}): {str(e)}")
+                continue
+        
+        logger.info(f"❌ [HYPERPARAMS_SEARCH] 호환 가능한 하이퍼파라미터를 찾지 못했습니다.")
+        return None
+        
+    except Exception as e:
+        logger.error(f"하이퍼파라미터 호환성 탐색 중 오류: {str(e)}")
+        return None
+
 def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_col_idx, device, current_period, file_path=None, n_trials=30, k_folds=5, use_cache=True):
     """
     시계열 K-fold 교차 검증을 사용하여 반월별 데이터에 대한 하이퍼파라미터 최적화
     """
     logger.info(f"\n===== {current_period} 하이퍼파라미터 최적화 시작 (시계열 {k_folds}-fold 교차 검증) =====")
     
-    # 캐시 파일 경로 - 파일별 캐시 디렉토리 사용
+    # 🔧 확장된 하이퍼파라미터 캐시 로직 - 기존 파일의 하이퍼파라미터도 탐색
     file_cache_dir = get_file_cache_dirs(file_path)['models']
     cache_file = os.path.join(file_cache_dir, f"hyperparams_kfold_{current_period.replace('-', '_')}.json")
     logger.info(f"📁 하이퍼파라미터 캐시 파일: {cache_file}")
@@ -1763,15 +1860,35 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
     # models 디렉토리 생성
     os.makedirs(file_cache_dir, exist_ok=True)
     
-    # 캐시 확인
+    # 🔍 1단계: 현재 파일의 하이퍼파라미터 캐시 확인
     if use_cache and os.path.exists(cache_file):
         try:
             with open(cache_file, 'r') as f:
                 cached_params = json.load(f)
-            logger.info(f"{current_period} 캐시된 하이퍼파라미터 로드 완료")
+            logger.info(f"✅ [{current_period}] 현재 파일의 캐시된 하이퍼파라미터 로드 완료")
             return cached_params
         except Exception as e:
             logger.error(f"캐시 파일 로드 오류: {str(e)}")
+    
+    # 🔍 2단계: 데이터 확장 시 기존 파일의 하이퍼파라미터 탐색
+    if use_cache:
+        logger.info(f"🔍 [{current_period}] 현재 파일에 캐시가 없습니다. 기존 파일의 하이퍼파라미터를 탐색합니다...")
+        compatible_hyperparams = find_compatible_hyperparameters(file_path, current_period)
+        if compatible_hyperparams:
+            logger.info(f"🔄 [{current_period}] 호환 가능한 하이퍼파라미터를 발견했습니다!")
+            logger.info(f"    📁 Source: {compatible_hyperparams['source_file']}")
+            logger.info(f"    📊 Extension info: {compatible_hyperparams['extension_info']}")
+            
+            # 호환 가능한 하이퍼파라미터를 현재 파일에 복사하여 저장
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump(compatible_hyperparams['hyperparams'], f, indent=2)
+                logger.info(f"💾 [{current_period}] 호환 하이퍼파라미터를 현재 파일에 저장했습니다.")
+                return compatible_hyperparams['hyperparams']
+            except Exception as e:
+                logger.error(f"하이퍼파라미터 저장 오류: {str(e)}")
+                
+        logger.info(f"❌ [{current_period}] 호환 가능한 기존 하이퍼파라미터를 찾지 못했습니다. 새로 최적화를 진행합니다.")
     
     # 기본 하이퍼파라미터 정의 (최적화 실패 시 사용)
     default_params = {
@@ -5544,7 +5661,7 @@ def check_existing_prediction(current_date):
         date_str = first_prediction_date.strftime('%Y%m%d')
         
         # 반월 정보 계산 (캐시 정확성을 위해)
-        current_semimonthly = get_semimonthly_period(current_date)
+        current_semimonthly = get_semimonthly_period(first_prediction_date)
         
         logger.info(f"🔍 Checking cache for prediction starting: {first_prediction_date.strftime('%Y-%m-%d')}")
         logger.info(f"  📅 Data end date: {current_date.strftime('%Y-%m-%d')}")
@@ -7215,14 +7332,28 @@ def upload_file():
                 logger.warning(f"Data analysis failed: {str(e)}")
                 data_info = {'warning': f'Data analysis failed: {str(e)}'}
             
-            # 🔍 캐시 호환성 확인 (데이터 범위 고려)
+            # 🔍 캐시 호환성 확인 (데이터 범위 고려) - 개선된 로직
             # 사용자의 의도된 데이터 범위 추정 (기본값: 2022년부터 LSTM, 전체 데이터 VARMAX)
             intended_range = {
                 'start_date': '2022-01-01',  # LSTM 권장 시작점
                 'cutoff_date': data_info.get('end_date', end_date.strftime('%Y-%m-%d'))
             }
             
+            logger.info(f"🔍 [UPLOAD_CACHE] Starting cache compatibility check:")
+            logger.info(f"  📁 New file: {temp_filename}")
+            logger.info(f"  📅 Data range: {data_info.get('start_date')} ~ {data_info.get('end_date')}")
+            logger.info(f"  📊 Total records: {data_info.get('total_records')}")
+            logger.info(f"  🎯 Intended range: {intended_range}")
+            
             cache_result = find_compatible_cache_file(temp_filepath, intended_range)
+            
+            logger.info(f"🎯 [UPLOAD_CACHE] Cache check result:")
+            logger.info(f"  ✅ Found: {cache_result['found']}")
+            logger.info(f"  🏷️ Type: {cache_result.get('cache_type')}")
+            if cache_result.get('cache_files'):
+                logger.info(f"  📁 Cache files: {[os.path.basename(f) for f in cache_result['cache_files']]}")
+            if cache_result.get('compatibility_info'):
+                logger.info(f"  ℹ️ Compatibility info: {cache_result['compatibility_info']}")
             
             response_data = {
                 'success': True,
@@ -7254,13 +7385,20 @@ def upload_file():
                     
                 elif cache_type == 'extension':
                     cache_file = cache_files[0] if cache_files else None
-                    if 'new_rows_count' in compatibility_info:
-                        response_data['cache_info']['message'] = f"데이터 확장 감지! {compatibility_info['new_rows_count']}개 새 행이 추가되었습니다. 기존 캐시를 활용합니다."
+                    extension_details = compatibility_info.get('extension_details', {})
+                    new_rows = extension_details.get('new_rows_count', compatibility_info.get('new_rows_count', 0))
+                    extension_type = extension_details.get('validation_details', {}).get('extension_type', ['데이터 확장'])
+                    
+                    if isinstance(extension_type, list):
+                        extension_desc = ' + '.join(extension_type)
                     else:
-                        response_data['cache_info']['message'] = "데이터 확장이 감지되었습니다. 기존 캐시를 활용합니다."
+                        extension_desc = str(extension_type)
+                    
+                    response_data['cache_info']['message'] = f"📈 데이터 확장 감지! {extension_desc} (+{new_rows}개 새 행). 기존 하이퍼파라미터와 캐시를 재사용할 수 있습니다."
                     response_data['cache_info']['compatible_file'] = cache_file
                     response_data['cache_info']['extension_info'] = compatibility_info
-                    logger.info(f"📈 [CACHE] Extension detected from {cache_file}")
+                    response_data['cache_info']['hyperparams_reusable'] = True  # 하이퍼파라미터 재사용 가능 표시
+                    logger.info(f"📈 [CACHE] Extension detected from {cache_file}: {extension_desc} (+{new_rows} rows)")
                     
                 elif cache_type in ['partial', 'near_complete', 'multi_cache']:
                     best_coverage = compatibility_info.get('best_coverage', 0)
@@ -7277,19 +7415,50 @@ def upload_file():
                     response_data['cache_info']['compatibility_info'] = compatibility_info
                     logger.info(f"🎯 [ENHANCED_CACHE] {cache_type} cache found: {total_caches} caches, {best_coverage:.1%} coverage")
                 
-                # 기존 파일 경로 유지 (스마트 캐시는 예측 시점에서 처리)
-                if cache_type in ['exact', 'extension'] and cache_files:
+                # 🔧 파일 처리 로직 개선: 데이터 확장 시 새 파일 사용
+                if cache_type == 'exact' and cache_files:
+                    # 정확히 동일한 파일인 경우에만 기존 파일 사용
                     cache_file = cache_files[0]
                     response_data['filepath'] = cache_file
                     response_data['filename'] = os.path.basename(cache_file)
                     
-                    # 임시 파일 삭제 (필요시)
+                    # 임시 파일 삭제 (완전히 동일한 경우만)
                     if temp_filepath != cache_file:
                         try:
                             os.remove(temp_filepath)
-                            logger.info(f"🗑️ [CLEANUP] Temporary file removed: {temp_filename}")
+                            logger.info(f"🗑️ [CLEANUP] Temporary file removed (exact match): {temp_filename}")
                         except:
                             pass
+                            
+                elif cache_type == 'extension' and cache_files:
+                    # 🔄 데이터 확장의 경우: 새 파일을 사용하되, 캐시 정보는 유지
+                    logger.info(f"📈 [EXTENSION] Data extension detected - using NEW file with cache info")
+                    
+                    # 새 파일을 정식 파일명으로 저장
+                    content_hash = get_data_content_hash(temp_filepath)
+                    final_filename = f"data_{content_hash}.csv" if content_hash else temp_filename
+                    final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
+                    
+                    if temp_filepath != final_filepath:
+                        shutil.move(temp_filepath, final_filepath)
+                        logger.info(f"📝 [UPLOAD] Extended file renamed: {final_filename}")
+                        
+                    response_data['filepath'] = final_filepath
+                    response_data['filename'] = final_filename
+                    
+                    # 확장 정보에 새 파일 정보 추가
+                    response_data['cache_info']['new_file_used'] = True
+                    response_data['cache_info']['original_cache_file'] = cache_files[0]
+                    
+                    # 🔑 데이터 확장 표시 - 하이퍼파라미터 재사용 가능
+                    response_data['data_extended'] = True
+                    response_data['hyperparams_inheritance'] = {
+                        'available': True,
+                        'source_file': os.path.basename(cache_files[0]),
+                        'extension_type': extension_desc if 'extension_desc' in locals() else '데이터 확장',
+                        'new_rows_added': new_rows if 'new_rows' in locals() else compatibility_info.get('new_rows_count', 0)
+                    }
+                    
                 else:
                     # 새 파일은 유지 (부분/다중 캐시의 경우)
                     content_hash = get_data_content_hash(temp_filepath)
@@ -7466,11 +7635,23 @@ def get_file_metadata():
 def get_available_dates():
     filepath = request.args.get('filepath')
     days_limit = int(request.args.get('limit', 999999))  # 기본값을 매우 큰 수로 설정 (모든 날짜)
+    force_refresh = request.args.get('force_refresh', 'false').lower() == 'true'  # 강제 새로고침 옵션
     
     if not filepath or not os.path.exists(filepath):
         return jsonify({'error': 'File not found'}), 404
     
     try:
+        # 🔄 파일의 최신 해시와 수정 시간 확인하여 변경 감지
+        current_file_hash = get_data_content_hash(filepath)
+        current_file_mtime = os.path.getmtime(filepath)
+        
+        logger.info(f"🔍 [DATE_REFRESH] Checking file status:")
+        logger.info(f"  📁 File: {os.path.basename(filepath)}")
+        logger.info(f"  🔑 Current hash: {current_file_hash[:12] if current_file_hash else 'None'}...")
+        logger.info(f"  ⏰ Modified time: {datetime.fromtimestamp(current_file_mtime).strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"  🔄 Force refresh: {force_refresh}")
+        
+        # 파일 데이터 로드 및 분석 (항상 최신 파일 내용 확인)
         df = pd.read_csv(filepath)
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
@@ -7481,25 +7662,61 @@ def get_available_dates():
         updated_holidays = load_holidays_from_file()  # 파일 휴일만 사용
         logger.info(f"🏖️ [HOLIDAYS] Total holidays (file only): {len(updated_holidays)}")
         
-        # 전체 데이터의 50% 지점 계산 (참고용, 실제 필터링에는 사용하지 않음)
+        # 📊 실제 파일 데이터 범위 확인 (캐시 무시)
         total_rows = len(df)
-        halfway_index = total_rows // 2
-        halfway_date = df.iloc[halfway_index]['Date']
+        data_start_date = df.iloc[0]['Date']
+        data_end_date = df.iloc[-1]['Date']
         
-        logger.info(f"📊 Total data rows: {total_rows}")
-        logger.info(f"📍 50% point: row {halfway_index}, date: {halfway_date.strftime('%Y-%m-%d')}")
+        logger.info(f"📊 [ACTUAL_DATA] File analysis results:")
+        logger.info(f"  📈 Total data rows: {total_rows}")
+        logger.info(f"  📅 Actual date range: {data_start_date.strftime('%Y-%m-%d')} ~ {data_end_date.strftime('%Y-%m-%d')}")
         
-        # 50% 지점에서 다음 반월 시작일 계산 (참고용)
-        halfway_semimonthly = get_semimonthly_period(halfway_date)
-        next_semimonthly = get_next_semimonthly_period(halfway_date)
-        prediction_start_threshold, _ = get_semimonthly_date_range(next_semimonthly)
+        # 🔍 기존 캐시와 비교 (있는 경우)
+        existing_cache_range = find_existing_cache_range(filepath)
+        if existing_cache_range and not force_refresh:
+            cache_start = pd.to_datetime(existing_cache_range['start_date'])
+            cache_cutoff = pd.to_datetime(existing_cache_range['cutoff_date'])
+            
+            logger.info(f"💾 [CACHE_COMPARISON] Found existing cache range:")
+            logger.info(f"  📅 Cached range: {cache_start.strftime('%Y-%m-%d')} ~ {cache_cutoff.strftime('%Y-%m-%d')}")
+            
+            # 실제 데이터가 캐시된 범위보다 확장되었는지 확인
+            data_extended = (
+                data_start_date < cache_start or 
+                data_end_date > cache_cutoff
+            )
+            
+            if data_extended:
+                logger.info(f"📈 [DATA_EXTENSION] Data has been extended!")
+                logger.info(f"  ⬅️ Start extension: {data_start_date.strftime('%Y-%m-%d')} vs cached {cache_start.strftime('%Y-%m-%d')}")
+                logger.info(f"  ➡️ End extension: {data_end_date.strftime('%Y-%m-%d')} vs cached {cache_cutoff.strftime('%Y-%m-%d')}")
+                logger.info(f"  🔄 Using extended data range for date calculation")
+            else:
+                logger.info(f"✅ [NO_EXTENSION] Data range matches cached range, proceeding with current data")
+        else:
+            if force_refresh:
+                logger.info(f"🔄 [FORCE_REFRESH] Ignoring cache due to force refresh")
+            else:
+                logger.info(f"📭 [NO_CACHE] No existing cache found, using full data range")
         
-        logger.info(f"📅 50% point semimonthly period: {halfway_semimonthly}")
-        logger.info(f"🎯 Next semimonthly period: {next_semimonthly}")
-        logger.info(f"🚀 Prediction start threshold: {prediction_start_threshold.strftime('%Y-%m-%d')}")
+        # 데이터 마지막 날짜의 다음 영업일을 계산하여 예측 시작점 설정 (실제 데이터 기준)
+        # 최소 100개 행 이상의 히스토리가 있는 경우에만 예측 가능
+        min_history_rows = 100
+        prediction_start_index = max(min_history_rows, total_rows // 4)  # 25% 지점 또는 최소 100행 중 큰 값
         
-        # 🔧 50% 지점 이후만 예측 가능한 날짜로 설정
-        predictable_dates = df.iloc[halfway_index:]['Date']
+        # 실제 예측에 사용할 수 있는 모든 날짜 (충분한 히스토리가 있는 날짜부터)
+        predictable_dates = df.iloc[prediction_start_index:]['Date']
+        
+        # 예측 시작 임계값 계산 (참고용)
+        if prediction_start_index < total_rows:
+            prediction_threshold_date = df.iloc[prediction_start_index]['Date']
+        else:
+            prediction_threshold_date = data_end_date
+        
+        logger.info(f"🎯 [PREDICTION_CALC] Prediction calculation:")
+        logger.info(f"  📊 Min history rows: {min_history_rows}")
+        logger.info(f"  📍 Start index: {prediction_start_index} (date: {prediction_threshold_date.strftime('%Y-%m-%d')})")
+        logger.info(f"  📅 Predictable dates: {len(predictable_dates)} dates available")
         
         # 예측 가능한 모든 날짜를 내림차순으로 반환 (최신 날짜부터)
         # days_limit보다 작은 경우에만 제한 적용
@@ -7508,29 +7725,242 @@ def get_available_dates():
         else:
             dates = predictable_dates.sort_values(ascending=False).head(days_limit).dt.strftime('%Y-%m-%d').tolist()
         
-        logger.info(f"🔢 Predictable dates count: {len(predictable_dates)} → 반환: {len(dates)}개")
+        logger.info(f"🔢 [FINAL_RESULT] Final date calculation:")
+        logger.info(f"  📊 Available predictable dates: {len(predictable_dates)}")
+        logger.info(f"  📋 Returned dates: {len(dates)}")
+        logger.info(f"  📅 Latest available date: {dates[0] if dates else 'None'}")
         
         response_data = {
             'success': True,
             'dates': dates,
             'latest_date': dates[0] if dates else None,  # 첫 번째 요소가 최신 날짜 (내림차순)
-            'prediction_threshold': prediction_start_threshold.strftime('%Y-%m-%d'),
-            'halfway_point': halfway_date.strftime('%Y-%m-%d'),
-            'halfway_semimonthly': halfway_semimonthly,
-            'target_semimonthly': next_semimonthly
+            'data_start_date': data_start_date.strftime('%Y-%m-%d'),
+            'data_end_date': data_end_date.strftime('%Y-%m-%d'),
+            'prediction_threshold': prediction_threshold_date.strftime('%Y-%m-%d'),
+            'min_history_rows': min_history_rows,
+            'total_rows': total_rows,
+            'file_hash': current_file_hash[:12] if current_file_hash else None,  # 추가: 파일 해시 정보
+            'file_modified': datetime.fromtimestamp(current_file_mtime).strftime('%Y-%m-%d %H:%M:%S')  # 추가: 파일 수정 시간
         }
         
-        logger.info(f"📡 [API RESPONSE] Sending dates response:")
-        logger.info(f"  📅 Total predictable dates: {len(predictable_dates)}")
-        logger.info(f"  📅 Returned dates: {len(dates)}")
-        logger.info(f"  📍 50% threshold: {response_data['prediction_threshold']}")
-        logger.info(f"  🎯 Target period: {response_data['target_semimonthly']}")
-        logger.info(f"  📅 Date range: {dates[-1]} ~ {dates[0]} (최신부터)")  # 첫번째가 최신, 마지막이 가장 오래된
+        logger.info(f"📡 [API_RESPONSE] Sending enhanced dates response:")
+        logger.info(f"  📅 Data range: {response_data['data_start_date']} ~ {response_data['data_end_date']}")
+        logger.info(f"  🎯 Prediction threshold: {response_data['prediction_threshold']}")
+        logger.info(f"  📅 Available date range: {dates[-1] if dates else 'None'} ~ {dates[0] if dates else 'None'} (최신부터)")
+        logger.info(f"  🔑 File signature: {response_data['file_hash']} @ {response_data['file_modified']}")
         
         return jsonify(response_data)
     except Exception as e:
         logger.error(f"Error reading dates: {str(e)}")
         return jsonify({'error': f'Error reading dates: {str(e)}'}), 500
+
+@app.route('/api/data/refresh', methods=['POST'])
+def refresh_file_data():
+    """파일 데이터 새로고침 및 캐시 갱신 API"""
+    try:
+        filepath = request.json.get('filepath') if request.json else request.args.get('filepath')
+        if not filepath or not os.path.exists(filepath):
+            return jsonify({'error': 'File not found'}), 404
+        
+        # 파일 해시와 수정 시간 확인
+        current_file_hash = get_data_content_hash(filepath)
+        current_file_mtime = os.path.getmtime(filepath)
+        
+        logger.info(f"🔄 [FILE_REFRESH] Starting file data refresh:")
+        logger.info(f"  📁 File: {os.path.basename(filepath)}")
+        logger.info(f"  🔑 Hash: {current_file_hash[:12] if current_file_hash else 'None'}...")
+        
+        # 기존 캐시 확인
+        existing_cache_range = find_existing_cache_range(filepath)
+        refresh_needed = False
+        refresh_reason = []
+        
+        if existing_cache_range:
+            # 캐시된 메타데이터와 비교
+            meta_file = existing_cache_range.get('meta_file')
+            if meta_file and os.path.exists(meta_file):
+                try:
+                    with open(meta_file, 'r', encoding='utf-8') as f:
+                        meta_data = json.load(f)
+                    
+                    cached_hash = meta_data.get('file_hash')
+                    cached_mtime = meta_data.get('file_modified_time')
+                    
+                    if cached_hash != current_file_hash:
+                        refresh_needed = True
+                        refresh_reason.append("File content changed")
+                        
+                    if cached_mtime and cached_mtime != current_file_mtime:
+                        refresh_needed = True
+                        refresh_reason.append("File modification time changed")
+                        
+                except Exception as e:
+                    logger.warning(f"Error reading cache metadata: {str(e)}")
+                    refresh_needed = True
+                    refresh_reason.append("Cache metadata error")
+            else:
+                refresh_needed = True
+                refresh_reason.append("No cache metadata found")
+        else:
+            refresh_needed = True
+            refresh_reason.append("No existing cache")
+        
+        # 파일 데이터 분석
+        df = pd.read_csv(filepath)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.sort_values('Date')
+        
+        current_data_range = {
+            'start_date': df.iloc[0]['Date'],
+            'end_date': df.iloc[-1]['Date'],
+            'total_rows': len(df)
+        }
+        
+        # 캐시와 실제 데이터 범위 비교
+        if existing_cache_range and not refresh_needed:
+            cache_start = pd.to_datetime(existing_cache_range['start_date'])
+            cache_cutoff = pd.to_datetime(existing_cache_range['cutoff_date'])
+            
+            if (current_data_range['start_date'] < cache_start or 
+                current_data_range['end_date'] > cache_cutoff):
+                refresh_needed = True
+                refresh_reason.append("Data range extended")
+        
+        response_data = {
+            'success': True,
+            'refresh_needed': refresh_needed,
+            'refresh_reasons': refresh_reason,
+            'file_info': {
+                'hash': current_file_hash[:12] if current_file_hash else None,
+                'modified_time': datetime.fromtimestamp(current_file_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                'total_rows': current_data_range['total_rows'],
+                'date_range': {
+                    'start': current_data_range['start_date'].strftime('%Y-%m-%d'),
+                    'end': current_data_range['end_date'].strftime('%Y-%m-%d')
+                }
+            }
+        }
+        
+        if existing_cache_range:
+            response_data['cache_info'] = {
+                'date_range': {
+                    'start': existing_cache_range['start_date'],
+                    'end': existing_cache_range['cutoff_date']
+                },
+                'meta_file': existing_cache_range.get('meta_file')
+            }
+        
+        logger.info(f"📊 [REFRESH_ANALYSIS] File refresh analysis:")
+        logger.info(f"  🔄 Refresh needed: {refresh_needed}")
+        logger.info(f"  📝 Reasons: {', '.join(refresh_reason) if refresh_reason else 'None'}")
+        logger.info(f"  📅 Current range: {response_data['file_info']['date_range']['start']} ~ {response_data['file_info']['date_range']['end']}")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        logger.error(f"Error in file refresh check: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/compare-files', methods=['POST'])
+def debug_compare_files():
+    """두 파일을 직접 비교하여 차이점을 분석하는 디버깅 API"""
+    try:
+        data = request.json
+        file1_path = data.get('file1_path')
+        file2_path = data.get('file2_path')
+        
+        if not file1_path or not file2_path:
+            return jsonify({'error': 'Both file paths are required'}), 400
+            
+        if not os.path.exists(file1_path) or not os.path.exists(file2_path):
+            return jsonify({'error': 'One or both files do not exist'}), 404
+        
+        logger.info(f"🔍 [DEBUG_COMPARE] Comparing files:")
+        logger.info(f"  📁 File 1: {file1_path}")
+        logger.info(f"  📁 File 2: {file2_path}")
+        
+        # 파일 기본 정보
+        file1_hash = get_data_content_hash(file1_path)
+        file2_hash = get_data_content_hash(file2_path)
+        file1_size = os.path.getsize(file1_path)
+        file2_size = os.path.getsize(file2_path)
+        file1_mtime = os.path.getmtime(file1_path)
+        file2_mtime = os.path.getmtime(file2_path)
+        
+        # 데이터 분석
+        df1 = pd.read_csv(file1_path)
+        df2 = pd.read_csv(file2_path)
+        
+        if 'Date' in df1.columns and 'Date' in df2.columns:
+            df1['Date'] = pd.to_datetime(df1['Date'])
+            df2['Date'] = pd.to_datetime(df2['Date'])
+            df1 = df1.sort_values('Date')
+            df2 = df2.sort_values('Date')
+            
+            file1_dates = {
+                'start': df1['Date'].min(),
+                'end': df1['Date'].max(),
+                'count': len(df1)
+            }
+            
+            file2_dates = {
+                'start': df2['Date'].min(),
+                'end': df2['Date'].max(),
+                'count': len(df2)
+            }
+        else:
+            file1_dates = {'error': 'No Date column'}
+            file2_dates = {'error': 'No Date column'}
+        
+        # 확장 체크
+        extension_result = check_data_extension(file1_path, file2_path)
+        
+        # 캐시 호환성 체크
+        cache_result = find_compatible_cache_file(file2_path)
+        
+        response_data = {
+            'success': True,
+            'comparison': {
+                'file1': {
+                    'path': file1_path,
+                    'hash': file1_hash[:12] if file1_hash else None,
+                    'size': file1_size,
+                    'modified': datetime.fromtimestamp(file1_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    'dates': {
+                        'start': file1_dates['start'].strftime('%Y-%m-%d') if isinstance(file1_dates.get('start'), pd.Timestamp) else str(file1_dates.get('start')),
+                        'end': file1_dates['end'].strftime('%Y-%m-%d') if isinstance(file1_dates.get('end'), pd.Timestamp) else str(file1_dates.get('end')),
+                        'count': file1_dates.get('count')
+                    } if 'error' not in file1_dates else file1_dates
+                },
+                'file2': {
+                    'path': file2_path,
+                    'hash': file2_hash[:12] if file2_hash else None,
+                    'size': file2_size,
+                    'modified': datetime.fromtimestamp(file2_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                    'dates': {
+                        'start': file2_dates['start'].strftime('%Y-%m-%d') if isinstance(file2_dates.get('start'), pd.Timestamp) else str(file2_dates.get('start')),
+                        'end': file2_dates['end'].strftime('%Y-%m-%d') if isinstance(file2_dates.get('end'), pd.Timestamp) else str(file2_dates.get('end')),
+                        'count': file2_dates.get('count')
+                    } if 'error' not in file2_dates else file2_dates
+                },
+                'identical_hash': file1_hash == file2_hash,
+                'size_difference': file2_size - file1_size,
+                'extension_analysis': extension_result,
+                'cache_analysis': cache_result
+            }
+        }
+        
+        logger.info(f"📊 [DEBUG_COMPARE] Comparison results:")
+        logger.info(f"  🔑 Identical hash: {file1_hash == file2_hash}")
+        logger.info(f"  📏 Size difference: {file2_size - file1_size} bytes")
+        logger.info(f"  📈 Is extension: {extension_result.get('is_extension', False)}")
+        logger.info(f"  💾 Cache found: {cache_result.get('found', False)}")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        logger.error(f"Error in file comparison: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predictions/saved', methods=['GET'])
 def get_saved_predictions():
