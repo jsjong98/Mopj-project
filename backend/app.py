@@ -1811,29 +1811,8 @@ def find_compatible_hyperparameters(current_file_path, current_period):
                             except Exception as e:
                                 logger.warning(f"기존 하이퍼파라미터 파일 로드 실패 ({existing_file.name}): {str(e)}")
                         else:
-                            # 해당 기간의 하이퍼파라미터가 없을 경우, 다른 기간의 하이퍼파라미터를 찾아보기
-                            logger.info(f"🔍 [HYPERPARAMS_SEARCH] {current_period} 기간의 하이퍼파라미터가 없습니다. 다른 기간을 탐색합니다...")
-                            
-                            # 모든 하이퍼파라미터 파일 찾기
-                            for hyperparam_file in Path(existing_models_dir).glob("hyperparams_kfold_*.json"):
-                                try:
-                                    with open(hyperparam_file, 'r') as f:
-                                        hyperparams = json.load(f)
-                                    
-                                    period_from_file = hyperparam_file.stem.replace('hyperparams_kfold_', '').replace('_', '-')
-                                    logger.info(f"🔄 [HYPERPARAMS_SEARCH] 대체 하이퍼파라미터 발견 (기간: {period_from_file})")
-                                    
-                                    return {
-                                        'hyperparams': hyperparams,
-                                        'source_file': str(existing_file),
-                                        'extension_info': extension_result,
-                                        'period': period_from_file,
-                                        'alternative_period': True
-                                    }
-                                    
-                                except Exception as e:
-                                    logger.warning(f"하이퍼파라미터 파일 로드 실패 ({hyperparam_file}): {str(e)}")
-                                    continue
+                            # ❌ 삭제된 부분: 다른 기간의 하이퍼파라미터를 대체로 사용하는 로직 제거
+                            logger.info(f"🔍 [HYPERPARAMS_SEARCH] {current_period} 기간의 하이퍼파라미터가 없습니다. 새로운 최적화가 필요합니다.")
                     
             except Exception as e:
                 logger.warning(f"파일 확장 관계 확인 실패 ({existing_file.name}): {str(e)}")
@@ -1870,12 +1849,12 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
         except Exception as e:
             logger.error(f"캐시 파일 로드 오류: {str(e)}")
     
-    # 🔍 2단계: 데이터 확장 시 기존 파일의 하이퍼파라미터 탐색
+    # 🔍 2단계: 데이터 확장 시 기존 파일의 동일 기간 하이퍼파라미터만 탐색 (대체 기간 사용 금지)
     if use_cache:
-        logger.info(f"🔍 [{current_period}] 현재 파일에 캐시가 없습니다. 기존 파일의 하이퍼파라미터를 탐색합니다...")
+        logger.info(f"🔍 [{current_period}] 현재 파일에 캐시가 없습니다. 기존 파일에서 동일 기간의 하이퍼파라미터만 탐색합니다...")
         compatible_hyperparams = find_compatible_hyperparameters(file_path, current_period)
         if compatible_hyperparams:
-            logger.info(f"🔄 [{current_period}] 호환 가능한 하이퍼파라미터를 발견했습니다!")
+            logger.info(f"✅ [{current_period}] 동일 기간의 호환 가능한 하이퍼파라미터를 발견했습니다!")
             logger.info(f"    📁 Source: {compatible_hyperparams['source_file']}")
             logger.info(f"    📊 Extension info: {compatible_hyperparams['extension_info']}")
             
@@ -1888,7 +1867,7 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
             except Exception as e:
                 logger.error(f"하이퍼파라미터 저장 오류: {str(e)}")
                 
-        logger.info(f"❌ [{current_period}] 호환 가능한 기존 하이퍼파라미터를 찾지 못했습니다. 새로 최적화를 진행합니다.")
+        logger.info(f"🆕 [{current_period}] 동일 기간의 기존 하이퍼파라미터가 없습니다. 해당 기간에 맞는 새로운 최적화를 진행합니다.")
     
     # 기본 하이퍼파라미터 정의 (최적화 실패 시 사용)
     default_params = {
@@ -3539,9 +3518,10 @@ def get_global_y_range(original_df, test_dates, predict_window):
     
     return y_min, y_max
 
-def visualize_attention_weights(model, features, prev_value, sequence_start_date, feature_names=None):
+def visualize_attention_weights(model, features, prev_value, sequence_end_date, feature_names=None):
     """
     모델의 어텐션 가중치를 시각화하는 함수 - 2x2 레이아웃으로 개선
+    sequence_end_date: 시퀀스 데이터의 마지막 날짜 (예측 시작일 전날)
     """
     model.eval()
     
@@ -3569,11 +3549,12 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
     # 시퀀스 길이
     seq_len = features.shape[1]
     
-    # 날짜 라벨 생성 (시퀀스 시작일로부터)
+    # 날짜 라벨 생성 (시퀀스 마지막 날짜부터 역순으로)
     date_labels = []
     for i in range(seq_len):
         try:
-            date = sequence_start_date - timedelta(days=seq_len-i-1)
+            # 시퀀스 마지막 날짜에서 거꾸로 계산
+            date = sequence_end_date - timedelta(days=seq_len-i-1)
             date_labels.append(format_date(date, '%Y-%m-%d'))
         except:
             # 날짜 변환 오류 시 인덱스 사용
@@ -3582,7 +3563,9 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
     # GridSpec을 사용한 레이아웃 생성 - 상단 2개, 하단 1개 큰 그래프
     fig = plt.figure(figsize=(24, 18))
     gs = GridSpec(2, 2, height_ratios=[1, 1.2], figure=fig)
-    fig.suptitle(f"Attention Weight Analysis for Sequence {format_date(sequence_start_date, '%Y-%m-%d')}", 
+    # 예측 시작일 계산 (시퀀스 마지막 날짜 다음날)
+    prediction_date = sequence_end_date + timedelta(days=1)
+    fig.suptitle(f"Attention Weight Analysis for Prediction {format_date(prediction_date, '%Y-%m-%d')}", 
                 fontsize=24, fontweight='bold')
     
     # 전체 폰트 크기 설정
@@ -3766,7 +3749,7 @@ def visualize_attention_weights(model, features, prev_value, sequence_start_date
         cache_dirs = get_file_cache_dirs()  # 현재 파일의 캐시 디렉토리 가져오기
         attn_dir = cache_dirs['plots']  # plots 디렉토리에 저장
         
-        filename = os.path.join(attn_dir, f"attention_{format_date(sequence_start_date, '%Y%m%d')}.png")
+        filename = os.path.join(attn_dir, f"attention_{format_date(prediction_date, '%Y%m%d')}.png")
         with open(filename, 'wb') as f:
             f.write(base64.b64decode(img_str))
     except Exception as e:
@@ -5368,8 +5351,10 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
             sequence_tensor = torch.FloatTensor(sequence).unsqueeze(0).to(device)
             prev_tensor = torch.FloatTensor([float(prev_value)]).to(device)
             
+            # 시퀀스의 마지막 날짜는 예측 시작일 전날이어야 함
+            sequence_end_date = prediction_start_date - pd.Timedelta(days=1)
             attention_file, attention_img, feature_importance = visualize_attention_weights(
-                model, sequence_tensor, prev_tensor, prediction_start_date, selected_features
+                model, sequence_tensor, prev_tensor, sequence_end_date, selected_features
             )
             
             attention_data = {
