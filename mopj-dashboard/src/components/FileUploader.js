@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, AlertTriangle } from 'lucide-react';
-import { uploadCSV, getAvailableDates } from '../services/api';
+import { Upload, AlertTriangle, RefreshCw } from 'lucide-react';
+import { uploadCSV, getAvailableDates, checkFileRefresh } from '../services/api';
 
 const styles = {
   container: (dragActive) => ({
@@ -146,8 +146,29 @@ const FileUploader = ({
       
       // 데이터 파일인 경우 날짜 정보 요청
       if (fileType.toLowerCase() === 'csv' || fileType.toLowerCase() === '데이터') {
-        // 업로드 성공 후 날짜 정보 요청
-        const datesResult = await getAvailableDates(uploadResult.filepath);
+        // 🔍 Step 1: 파일 확장 여부 확인
+        console.log('🔍 [FILE_UPLOAD] Checking if file needs refresh...');
+        const refreshCheck = await checkFileRefresh(uploadResult.filepath);
+        
+        let datesResult;
+        let dataExtended = false;
+        
+        if (refreshCheck.refresh_needed) {
+          console.log('🔄 [FILE_UPLOAD] File refresh needed:', refreshCheck.refresh_reasons);
+          
+          // 데이터 확장 감지
+          if (refreshCheck.refresh_reasons.includes('Data range extended')) {
+            dataExtended = true;
+            console.log('📈 [FILE_UPLOAD] Data extension detected! Forcing date refresh...');
+          }
+          
+          // 강제 새로고침으로 날짜 정보 요청
+          datesResult = await getAvailableDates(uploadResult.filepath, true);
+        } else {
+          console.log('✅ [FILE_UPLOAD] No refresh needed, getting dates normally...');
+          // 일반적인 날짜 정보 요청
+          datesResult = await getAvailableDates(uploadResult.filepath);
+        }
         
         // 날짜 정보 오류 확인
         if (datesResult.error) {
@@ -170,19 +191,28 @@ const FileUploader = ({
           return;
         }
         
-        // 성공 콜백 호출 - 50% 기준점 정보 포함
+        // 성공 콜백 호출 - 데이터 확장 정보 포함
         onUploadSuccess({
           filepath: uploadResult.filepath,
           dates: datesResult.dates || [],
           latestDate: datesResult.latest_date,
           file: file,
-          // 🎯 50% 기준점 정보 추가
+          // 🎯 기존 정보 유지
           prediction_threshold: datesResult.prediction_threshold,
           halfway_point: datesResult.halfway_point,
           halfway_semimonthly: datesResult.halfway_semimonthly,
           target_semimonthly: datesResult.target_semimonthly,
           // 캐시 정보 추가 (있는 경우)
-          cache_info: uploadResult.cache_info
+          cache_info: uploadResult.cache_info,
+          // 🔄 새로운 확장 정보 추가
+          data_extended: dataExtended,
+          refresh_info: refreshCheck,
+          // 파일 메타데이터 추가
+          file_hash: datesResult.file_hash,
+          file_modified: datesResult.file_modified,
+          total_rows: datesResult.total_rows,
+          data_start_date: datesResult.data_start_date,
+          data_end_date: datesResult.data_end_date
         });
       } else {
         // 휴일 파일 등 다른 용도의 파일
