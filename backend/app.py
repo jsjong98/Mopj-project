@@ -4232,6 +4232,10 @@ def compute_performance_metrics_improved(validation_data, start_day_value):
 
 def calculate_f1_score(actual, predicted):
     """방향성 예측의 F1 점수 계산"""
+    # 입력을 numpy 배열로 변환
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    
     actual_directions = np.sign(np.diff(actual))
     predicted_directions = np.sign(np.diff(predicted))
 
@@ -4255,10 +4259,14 @@ def calculate_direction_accuracy(actual, predicted):
         return 0.0
 
     try:
+        # 입력을 numpy 배열로 변환
+        actual = np.array(actual)
+        predicted = np.array(predicted)
+        
         actual_directions = np.sign(np.diff(actual))
         predicted_directions = np.sign(np.diff(predicted))
         
-        correct_predictions = (actual_directions == predicted_directions).sum()
+        correct_predictions = np.sum(actual_directions == predicted_directions)
         total_predictions = len(actual_directions)
         
         accuracy = (correct_predictions / total_predictions) * 100
@@ -4273,6 +4281,10 @@ def calculate_direction_weighted_score(actual, predicted):
         return 0.0, 1.0
         
     try:
+        # 입력을 numpy 배열로 변환
+        actual = np.array(actual)
+        predicted = np.array(predicted)
+        
         actual_changes = 100 * np.diff(actual) / actual[:-1]
         predicted_changes = 100 * np.diff(predicted) / predicted[:-1]
 
@@ -4309,11 +4321,15 @@ def calculate_direction_weighted_score(actual, predicted):
 def calculate_mape(actual, predicted):
     """MAPE 계산 함수"""
     try:
+        # 입력을 numpy 배열로 변환
+        actual = np.array(actual)
+        predicted = np.array(predicted)
+        
         if len(actual) == 0:
             return 0.0
         # inf 방지를 위해 0이 아닌 값만 사용
         mask = actual != 0
-        if not any(mask):
+        if not np.any(mask):  # any() 대신 np.any() 사용
             return 0.0
         return np.mean(np.abs((actual[mask] - predicted[mask]) / actual[mask])) * 100
     except Exception as e:
