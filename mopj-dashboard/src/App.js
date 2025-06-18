@@ -397,6 +397,42 @@ const App = () => {
   const handleUploadSuccess = (data) => {
     setFileInfo(data);
     
+    // 🔄 데이터 확장 감지 및 하이퍼파라미터 재사용 가능 알림
+    if (data.data_extended && data.hyperparams_inheritance) {
+      console.log('📈 [APP] Data extension detected with hyperparameter inheritance!');
+      console.log('🔧 [APP] Hyperparams inheritance:', data.hyperparams_inheritance);
+      
+      // 사용자에게 알림 (향후 Toast 메시지로 대체 가능)
+      if (data.hyperparams_inheritance.available) {
+        console.log(`🎯 [APP] 하이퍼파라미터 재사용 가능! 기존 파일(${data.hyperparams_inheritance.source_file})에서 ${data.hyperparams_inheritance.new_rows_added}개 새 행이 추가되었습니다.`);
+        console.log(`⚡ [APP] 예측 속도가 크게 향상됩니다!`);
+      }
+    }
+    
+    // 🔄 데이터 확장 감지 및 알림 처리
+    if (data.data_extended) {
+      console.log('📈 [APP] Data extension detected!');
+      console.log('📊 [APP] Refresh info:', data.refresh_info);
+      console.log('📅 [APP] New date range:', data.data_start_date, '~', data.data_end_date);
+      console.log('📋 [APP] Total rows:', data.total_rows);
+      
+      // 사용자에게 알림 (선택사항)
+      if (data.refresh_info && data.refresh_info.refresh_reasons) {
+        const reasons = data.refresh_info.refresh_reasons.join(', ');
+        console.log(`🔔 [APP] File has been updated: ${reasons}`);
+        
+        // 향후 Toast 알림 등으로 대체 가능
+        // toast.success(`파일이 업데이트되었습니다: ${reasons}`);
+      }
+    }
+    
+    // 기존 캐시 정보 초기화 (데이터가 확장된 경우)
+    if (data.data_extended) {
+      setCacheInfo(null);
+      setAccumulatedResults(null);
+      console.log('🔄 [APP] Cache cleared due to data extension');
+    }
+    
     // 🎯 캐시 정보 표시
     if (data.cache_info && data.cache_info.found) {
       const cacheMessage = data.cache_info.message;
