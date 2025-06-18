@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // 백엔드 URL 직접 지정
-const API_BASE_URL = '/api';
+const API_BASE_URL = 'http://localhost:5000/api';
 
 // API 클라이언트 생성
 const apiClient = axios.create({
@@ -41,10 +41,21 @@ export const uploadCSV = async (file) => {
   }
 };
 
-// 사용 가능한 날짜 조회
-export const getAvailableDates = async (filepath) => {
+// 사용 가능한 날짜 조회 (향상된 버전)
+export const getAvailableDates = async (filepath, forceRefresh = false) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/data/dates?filepath=${encodeURIComponent(filepath)}`, {
+    const url = new URL(`${API_BASE_URL}/data/dates`);
+    url.searchParams.append('filepath', filepath);
+    if (forceRefresh) {
+      url.searchParams.append('force_refresh', 'true');
+      url.searchParams.append('_t', new Date().getTime()); // 캐시 방지
+    }
+    
+    const response = await fetch(url, {
+      headers: forceRefresh ? {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      } : {},
       mode: 'cors',
       credentials: 'omit'
     });
@@ -53,12 +64,65 @@ export const getAvailableDates = async (filepath) => {
       throw new Error('날짜 정보를 가져오는데 실패했습니다');
     }
     
-    return await response.json();
+    const data = await response.json();
+    
+    // 로깅 추가
+    if (forceRefresh) {
+      console.log('🔄 [DATE_REFRESH] Forced refresh completed:', {
+        filepath: filepath,
+        total_rows: data.total_rows,
+        date_range: `${data.data_start_date} ~ ${data.data_end_date}`,
+        available_dates: data.dates?.length || 0,
+        file_hash: data.file_hash,
+        file_modified: data.file_modified
+      });
+    }
+    
+    return data;
   } catch (error) {
     console.error('Get dates error:', error);
     return { 
       error: error.message || '날짜 정보를 가져오는 중 오류가 발생했습니다.',
       dates: [] 
+    };
+  }
+};
+
+// 파일 데이터 새로고침 체크
+export const checkFileRefresh = async (filepath) => {
+  try {
+    console.log('🔍 [REFRESH_CHECK] Checking if file needs refresh:', filepath);
+    
+    const response = await fetch(`${API_BASE_URL}/data/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ filepath }),
+      mode: 'cors',
+      credentials: 'omit'
+    });
+    
+    if (!response.ok) {
+      throw new Error('파일 새로고침 체크 실패');
+    }
+    
+    const data = await response.json();
+    
+    console.log('📊 [REFRESH_CHECK] File refresh analysis:', {
+      refresh_needed: data.refresh_needed,
+      reasons: data.refresh_reasons,
+      current_range: data.file_info?.date_range,
+      cached_range: data.cache_info?.date_range,
+      file_hash: data.file_info?.hash
+    });
+    
+    return data;
+  } catch (error) {
+    console.error('File refresh check error:', error);
+    return { 
+      error: error.message || '파일 새로고침 체크 중 오류가 발생했습니다.',
+      refresh_needed: false 
     };
   }
 };
