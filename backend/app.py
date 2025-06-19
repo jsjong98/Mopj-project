@@ -3518,7 +3518,7 @@ def get_global_y_range(original_df, test_dates, predict_window):
     
     return y_min, y_max
 
-def visualize_attention_weights(model, features, prev_value, sequence_end_date, feature_names=None):
+def visualize_attention_weights(model, features, prev_value, sequence_end_date, feature_names=None, actual_sequence_dates=None):
     """
     모델의 어텐션 가중치를 시각화하는 함수 - 2x2 레이아웃으로 개선
     sequence_end_date: 시퀀스 데이터의 마지막 날짜 (예측 시작일 전날)
@@ -3549,16 +3549,28 @@ def visualize_attention_weights(model, features, prev_value, sequence_end_date, 
     # 시퀀스 길이
     seq_len = features.shape[1]
     
-    # 날짜 라벨 생성 (시퀀스 마지막 날짜부터 역순으로)
+    # 날짜 라벨 생성 - 실제 시퀀스 날짜 사용
     date_labels = []
-    for i in range(seq_len):
-        try:
-            # 시퀀스 마지막 날짜에서 거꾸로 계산
-            date = sequence_end_date - timedelta(days=seq_len-i-1)
-            date_labels.append(format_date(date, '%Y-%m-%d'))
-        except:
-            # 날짜 변환 오류 시 인덱스 사용
-            date_labels.append(f"T-{seq_len-i-1}")
+    if actual_sequence_dates is not None and len(actual_sequence_dates) == seq_len:
+        # 실제 날짜 정보가 전달된 경우 사용
+        for date in actual_sequence_dates:
+            try:
+                if isinstance(date, str):
+                    date_labels.append(date)
+                else:
+                    date_labels.append(format_date(date, '%Y-%m-%d'))
+            except:
+                date_labels.append(str(date))
+    else:
+        # 실제 날짜 정보가 없으면 기존 방식 사용 (시퀀스 마지막 날짜부터 역순으로)
+        for i in range(seq_len):
+            try:
+                # 시퀀스 마지막 날짜에서 거꾸로 계산
+                date = sequence_end_date - timedelta(days=seq_len-i-1)
+                date_labels.append(format_date(date, '%Y-%m-%d'))
+            except:
+                # 날짜 변환 오류 시 인덱스 사용
+                date_labels.append(f"T-{seq_len-i-1}")
     
     # GridSpec을 사용한 레이아웃 생성 - 상단 2개, 하단 1개 큰 그래프
     fig = plt.figure(figsize=(24, 18))
@@ -4195,26 +4207,82 @@ def compute_performance_metrics_improved(validation_data, start_day_value):
             logger.info("No validation data available - this is normal for pure future predictions")
             return None
         
-        # 검증 데이터에서 값 추출
-        actual_vals = [start_day_value] + [item['actual'] for item in validation_data]
-        pred_vals = [start_day_value] + [item['prediction'] for item in validation_data]
+        # start_day_value 안전하게 처리
+        if hasattr(start_day_value, 'iloc'):  # pandas Series/DataFrame인 경우
+            start_val = float(start_day_value.iloc[0] if len(start_day_value) > 0 else start_day_value)
+        elif hasattr(start_day_value, 'item'):  # numpy scalar인 경우
+            start_val = float(start_day_value.item())
+        else:
+            start_val = float(start_day_value)
         
-        # F1 점수 계산
-        f1, f1_report = calculate_f1_score(actual_vals, pred_vals)
-        direction_accuracy = calculate_direction_accuracy(actual_vals, pred_vals)
-        weighted_score, max_score = calculate_direction_weighted_score(actual_vals[1:], pred_vals[1:])
-        weighted_score_pct = (weighted_score / max_score) * 100 if max_score > 0 else 0.0
-        mape = calculate_mape(actual_vals[1:], pred_vals[1:])
+        # 검증 데이터에서 값 추출 (DataFrame/Series를 numpy로 안전하게 변환)
+        actual_vals = [start_val]
+        pred_vals = [start_val]
+        
+        for item in validation_data:
+            # actual 값 안전하게 추출
+            actual_val = item['actual']
+            if hasattr(actual_val, 'iloc'):  # pandas Series/DataFrame인 경우
+                actual_val = float(actual_val.iloc[0] if len(actual_val) > 0 else actual_val)
+            elif hasattr(actual_val, 'item'):  # numpy scalar인 경우
+                actual_val = float(actual_val.item())
+            else:
+                actual_val = float(actual_val)
+            actual_vals.append(actual_val)
+            
+            # prediction 값 안전하게 추출
+            pred_val = item['prediction']
+            if hasattr(pred_val, 'iloc'):  # pandas Series/DataFrame인 경우
+                pred_val = float(pred_val.iloc[0] if len(pred_val) > 0 else pred_val)
+            elif hasattr(pred_val, 'item'):  # numpy scalar인 경우
+                pred_val = float(pred_val.item())
+            else:
+                pred_val = float(pred_val)
+            pred_vals.append(pred_val)
+        
+        # F1 점수 계산 (각 단계별 로깅 추가)
+        try:
+            f1, f1_report = calculate_f1_score(actual_vals, pred_vals)
+        except Exception as e:
+            logger.error(f"Error in F1 score calculation: {str(e)}")
+            f1, f1_report = 0.0, "Error in F1 calculation"
+            
+        try:
+            direction_accuracy = calculate_direction_accuracy(actual_vals, pred_vals)
+        except Exception as e:
+            logger.error(f"Error in direction accuracy calculation: {str(e)}")
+            direction_accuracy = 0.0
+            
+        try:
+            weighted_score, max_score = calculate_direction_weighted_score(actual_vals[1:], pred_vals[1:])
+            weighted_score_pct = (weighted_score / max_score) * 100 if max_score > 0 else 0.0
+        except Exception as e:
+            logger.error(f"Error in weighted score calculation: {str(e)}")
+            weighted_score_pct = 0.0
+            
+        try:
+            mape = calculate_mape(actual_vals[1:], pred_vals[1:])
+        except Exception as e:
+            logger.error(f"Error in MAPE calculation: {str(e)}")
+            mape = 0.0
         
         # 코사인 유사도
         cosine_similarity = None
-        if len(actual_vals) > 1:
-            diff_actual = np.diff(actual_vals)
-            diff_pred = np.diff(pred_vals)
-            norm_actual = np.linalg.norm(diff_actual)
-            norm_pred = np.linalg.norm(diff_pred)
-            if norm_actual > 0 and norm_pred > 0:
-                cosine_similarity = np.dot(diff_actual, diff_pred) / (norm_actual * norm_pred)
+        try:
+            if len(actual_vals) > 1:
+                # numpy 배열로 변환하여 안전하게 처리
+                actual_vals_arr = np.array(actual_vals, dtype=float)
+                pred_vals_arr = np.array(pred_vals, dtype=float)
+                
+                diff_actual = np.diff(actual_vals_arr)
+                diff_pred = np.diff(pred_vals_arr)
+                norm_actual = np.linalg.norm(diff_actual)
+                norm_pred = np.linalg.norm(diff_pred)
+                if norm_actual > 0 and norm_pred > 0:
+                    cosine_similarity = np.dot(diff_actual, diff_pred) / (norm_actual * norm_pred)
+        except Exception as e:
+            logger.error(f"Error in cosine similarity calculation: {str(e)}")
+            cosine_similarity = None
         
         return {
             'f1': float(f1),
@@ -5367,10 +5435,10 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
             sequence_tensor = torch.FloatTensor(sequence).unsqueeze(0).to(device)
             prev_tensor = torch.FloatTensor([float(prev_value)]).to(device)
             
-            # 시퀀스의 마지막 날짜는 예측 시작일 전날이어야 함
-            sequence_end_date = prediction_start_date - pd.Timedelta(days=1)
+            # 실제 시퀀스 날짜 정보 전달 (sequence_dates 변수 사용)
+            actual_sequence_end_date = current_date  # current_date가 실제 데이터의 마지막 날짜
             attention_file, attention_img, feature_importance = visualize_attention_weights(
-                model, sequence_tensor, prev_tensor, sequence_end_date, selected_features
+                model, sequence_tensor, prev_tensor, actual_sequence_end_date, selected_features, sequence_dates
             )
             
             attention_data = {
@@ -7328,16 +7396,25 @@ def upload_file():
                         'lstm_recommended_cutoff': '2022-01-01'
                     }
                 else:
-                    data_info = {'warning': 'No Date column found'}
+                    # Date 컬럼이 없는 파일의 경우 (예: holidays.csv)
+                    file_type_hint = None
+                    if 'holiday' in original_filename.lower():
+                        file_type_hint = "휴일 파일로 보입니다. /api/holidays/upload 엔드포인트 사용을 권장합니다."
+                    data_info = {
+                        'warning': 'No Date column found',
+                        'file_type_hint': file_type_hint
+                    }
             except Exception as e:
                 logger.warning(f"Data analysis failed: {str(e)}")
                 data_info = {'warning': f'Data analysis failed: {str(e)}'}
             
             # 🔍 캐시 호환성 확인 (데이터 범위 고려) - 개선된 로직
             # 사용자의 의도된 데이터 범위 추정 (기본값: 2022년부터 LSTM, 전체 데이터 VARMAX)
+            # end_date가 정의되지 않은 경우를 위한 안전한 fallback
+            default_end_date = datetime.now().strftime('%Y-%m-%d')
             intended_range = {
                 'start_date': '2022-01-01',  # LSTM 권장 시작점
-                'cutoff_date': data_info.get('end_date', end_date.strftime('%Y-%m-%d'))
+                'cutoff_date': data_info.get('end_date', default_end_date)
             }
             
             logger.info(f"🔍 [UPLOAD_CACHE] Starting cache compatibility check:")
@@ -7570,9 +7647,22 @@ def upload_holidays():
             # 휴일 정보 업데이트
             new_holidays = update_holidays(filepath)
             
-            # 원본 파일을 모델 디렉토리로 복사 (standard location)
-            permanent_path = os.path.join('models', 'holidays' + os.path.splitext(file.filename)[1])
+            # 원본 파일을 holidays 디렉토리로 복사
+            holidays_dir = 'holidays'
+            if not os.path.exists(holidays_dir):
+                os.makedirs(holidays_dir)
+                logger.info(f"📁 Created holidays directory: {holidays_dir}")
+            
+            permanent_path = os.path.join(holidays_dir, 'holidays' + os.path.splitext(file.filename)[1])
             shutil.copy2(filepath, permanent_path)
+            logger.info(f"📁 Holiday file copied to: {permanent_path}")
+            
+            # 임시 파일 정리
+            try:
+                os.remove(filepath)
+                logger.info(f"🗑️ Temporary file removed: {filepath}")
+            except:
+                pass
             
             return jsonify({
                 'success': True,
