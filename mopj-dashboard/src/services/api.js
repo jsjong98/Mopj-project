@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // 백엔드 URL 직접 지정
-const API_BASE_URL = 'http://localhost:5000/api';
+const API_BASE_URL = '/api';
 
 // API 클라이언트 생성
 const apiClient = axios.create({
@@ -44,12 +44,15 @@ export const uploadCSV = async (file) => {
 // 사용 가능한 날짜 조회 (향상된 버전)
 export const getAvailableDates = async (filepath, forceRefresh = false) => {
   try {
-    const url = new URL(`${API_BASE_URL}/data/dates`);
-    url.searchParams.append('filepath', filepath);
+    // URL과 쿼리 파라미터 구성
+    const params = new URLSearchParams();
+    params.append('filepath', filepath);
     if (forceRefresh) {
-      url.searchParams.append('force_refresh', 'true');
-      url.searchParams.append('_t', new Date().getTime()); // 캐시 방지
+      params.append('force_refresh', 'true');
+      params.append('_t', new Date().getTime()); // 캐시 방지
     }
+    
+    const url = `${API_BASE_URL}/data/dates?${params.toString()}`;
     
     const response = await fetch(url, {
       headers: forceRefresh ? {
