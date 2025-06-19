@@ -1042,67 +1042,41 @@ class TimeSeriesDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 # 복합 손실 함수
-def composite_loss(pred, target, prev_value, alpha=0.6, beta=0.2, gamma=0.15, delta=0.05, eps=1e-8):
-    """
-    Composite loss for:
-      - MSE loss (for overall price accuracy)
-      - Volatility loss (to match the magnitude of changes)
-      - Directional loss (surrogate for F1-score improvement)
-      - Continuity loss (to ensure smooth transition)
-    """
-    # MSE Loss
-    loss_mse = F.mse_loss(pred, target)
+class DirectionalLoss(nn.Module):
+    def __init__(self, alpha=0.7, beta=0.2):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.mse = nn.MSELoss()
     
-    # Volatility Loss
-    pred_diff = pred[:, 1:] - pred[:, :-1]
-    target_diff = target[:, 1:] - target[:, :-1]
-    loss_vol = torch.mean(torch.abs(torch.log1p(torch.abs(pred_diff) + eps) - 
-                                  torch.log1p(torch.abs(target_diff) + eps)))
-    
-    # Directional Loss
-    cos_sim = torch.cosine_similarity(pred_diff, target_diff, dim=-1)
-    loss_dir = 1 - cos_sim.mean()
-    
-    # Continuity Loss
-    loss_cont = torch.mean(torch.abs(pred[:, 0:1] - prev_value))
-    
-    total_loss = alpha * loss_mse + beta * loss_vol + gamma * loss_dir + delta * loss_cont
-    loss_info = {
-        'mse_loss': loss_mse.item(),
-        'volatility_loss': loss_vol.item(),
-        'directional_loss': loss_dir.item(),
-        'continuity_loss': loss_cont.item(),
-        'total_loss': total_loss.item()
-    }
-    return total_loss, loss_info
+    def forward(self, pred, target, prev_value=None):
+        # 차원 맞추기
+        if len(target.shape) == 1:
+            target = target.view(-1, 1)
+        if len(pred.shape) == 1:
+            pred = pred.view(-1, 1)
+        
+        # MSE Loss
+        mse_loss = self.mse(pred, target)
+        
+        # Directional Loss (차원 확인)
+        if pred.shape[1] > 1:
+            pred_diff = pred[:, 1:] - pred[:, :-1]
+            target_diff = target[:, 1:] - target[:, :-1]
+            directional_loss = -torch.mean(torch.sign(pred_diff) * torch.sign(target_diff))
+        else:
+            directional_loss = torch.tensor(0.0).to(pred.device)
+        
+        # Continuity Loss
+        continuity_loss = 0
+        if prev_value is not None:
+            if len(prev_value.shape) == 1:
+                prev_value = prev_value.view(-1, 1)
+            continuity_loss = self.mse(pred[:, 0:1], prev_value)
+        
+        return self.alpha * mse_loss + (1 - self.alpha) * directional_loss + self.beta * continuity_loss
 
-# 학습률 스케줄러 클래스
-class CombinedScheduler:
-    def __init__(self, optimizer, warmup_steps, max_lr, factor=0.5, patience=5, min_lr=1e-6):
-        self.warmup_scheduler = WarmupScheduler(
-            optimizer=optimizer,
-            warmup_steps=warmup_steps,
-            max_lr=max_lr
-        )
-        self.plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer=optimizer,
-            mode='min',
-            factor=factor,
-            patience=patience,
-            verbose=True,
-            min_lr=min_lr
-        )
-        self.current_step = 0
-        self.warmup_steps = warmup_steps
-    
-    def step(self, val_loss=None):
-        # Warmup 단계에서는 매 배치마다 호출
-        if self.current_step < self.warmup_steps:
-            self.warmup_scheduler.step()
-            self.current_step += 1
-        # Warmup 이후에는 validation loss에 따라 조정
-        elif val_loss is not None:
-            self.plateau_scheduler.step(val_loss)
+# 학습률 스케줄러 클래스 (Purchase_decision_5days.py 방식)
 
 class WarmupScheduler:
     def __init__(self, optimizer, warmup_steps, max_lr):
@@ -1825,9 +1799,9 @@ def find_compatible_hyperparameters(current_file_path, current_period):
         logger.error(f"하이퍼파라미터 호환성 탐색 중 오류: {str(e)}")
         return None
 
-def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_col_idx, device, current_period, file_path=None, n_trials=30, k_folds=5, use_cache=True):
+def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_col_idx, device, current_period, file_path=None, n_trials=30, k_folds=10, use_cache=True):
     """
-    시계열 K-fold 교차 검증을 사용하여 반월별 데이터에 대한 하이퍼파라미터 최적화
+    시계열 K-fold 교차 검증을 사용하여 반월별 데이터에 대한 하이퍼파라미터 최적화 (Purchase_decision_5days.py 방식)
     """
     logger.info(f"\n===== {current_period} 하이퍼파라미터 최적화 시작 (시계열 {k_folds}-fold 교차 검증) =====")
     
@@ -1869,24 +1843,18 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
                 
         logger.info(f"🆕 [{current_period}] 동일 기간의 기존 하이퍼파라미터가 없습니다. 해당 기간에 맞는 새로운 최적화를 진행합니다.")
     
-    # 기본 하이퍼파라미터 정의 (최적화 실패 시 사용)
+            # 기본 하이퍼파라미터 정의 (최적화 실패 시 사용)
     default_params = {
-        'sequence_length': 20,
-        'hidden_size': 193,
+        'sequence_length': 46,
+        'hidden_size': 224,
         'num_layers': 6,
-        'dropout': 0.2548844201860255,
-        'batch_size': 77,
-        'learning_rate': 0.00012082451343807303,
-        'num_epochs': 107,
-        'loss_alpha': 0.506378255841371,  # MSE weight
-        'loss_beta': 0.17775383895727725,  # Volatility weight
-        'loss_gamma': 0.07133778859895412, # Directional weight
-        'loss_delta': 0.07027938312247926, # Continuity weight
-        'patience': 26,
-        'warmup_steps': 382,
-        'lr_factor': 0.49185859987249164,
-        'lr_patience': 8,
-        'min_lr': 1.1304817036887926e-07
+        'dropout': 0.318369281841675,
+        'batch_size': 49,
+        'learning_rate': 0.0009452489017042499,
+        'num_epochs': 72,
+        'loss_alpha': 0.7,  # DirectionalLoss alpha
+        'loss_beta': 0.2,   # DirectionalLoss beta
+        'patience': 14
     }
     
     # 데이터 길이 확인 - 충분하지 않으면 바로 기본값 반환
@@ -1935,21 +1903,15 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
         
         params = {
             'sequence_length': trial.suggest_int('sequence_length', min_seq_length, max_seq_length),
-            'hidden_size': trial.suggest_int('hidden_size', 32, 256),
+            'hidden_size': trial.suggest_int('hidden_size', 32, 256, step=8),
             'num_layers': trial.suggest_int('num_layers', 2, 6),
             'dropout': trial.suggest_float('dropout', 0.1, 0.5),
-            'batch_size': trial.suggest_int('batch_size', 16, min(128, len(train_data))),
+            'batch_size': trial.suggest_int('batch_size', 16, min(128, fold_size)),
             'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True),
             'num_epochs': trial.suggest_int('num_epochs', 50, 200),
             'patience': trial.suggest_int('patience', 10, 30),
-            'warmup_steps': trial.suggest_int('warmup_steps', 100, 1000),
-            'lr_factor': trial.suggest_float('lr_factor', 0.1, 0.5),
-            'lr_patience': trial.suggest_int('lr_patience', 3, 10),
-            'min_lr': trial.suggest_float('min_lr', 1e-7, 1e-5, log=True),
             'loss_alpha': trial.suggest_float('loss_alpha', 0.5, 0.9),
-            'loss_beta': trial.suggest_float('loss_beta', 0.1, 0.3),
-            'loss_gamma': trial.suggest_float('loss_gamma', 0.05, 0.2),
-            'loss_delta': trial.suggest_float('loss_delta', 0.01, 0.1)
+            'loss_beta': trial.suggest_float('loss_beta', 0.1, 0.3)
         }
         
         # K-fold 교차 검증
@@ -2001,7 +1963,19 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
                     output_size=predict_window
                 ).to(device)
 
+                # 손실 함수 생성 
+                criterion = DirectionalLoss(
+                    alpha=params['loss_alpha'],
+                    beta=params['loss_beta']
+                )
+
                 optimizer = torch.optim.Adam(model.parameters(), lr=params['learning_rate'])
+                
+                # 스케줄러 설정
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='min', factor=0.5,
+                    patience=params['patience']//2, verbose=False
+                )
 
                 # best_val_loss 변수 명시적 정의
                 best_val_loss = float('inf')
@@ -2014,11 +1988,7 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
                     for X_batch, y_batch, prev_batch in train_loader:
                         optimizer.zero_grad()
                         y_pred = model(X_batch, prev_batch)
-                        loss, _ = composite_loss(y_pred, y_batch, prev_batch,
-                                            alpha=params['loss_alpha'],
-                                            beta=params['loss_beta'],
-                                            gamma=params['loss_gamma'],
-                                            delta=params['loss_delta'])
+                        loss = criterion(y_pred, y_batch, prev_batch)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                         optimizer.step()
@@ -2031,14 +2001,13 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
                     with torch.no_grad():
                         for X_batch, y_batch, prev_batch in val_loader:
                             y_pred = model(X_batch, prev_batch)
-                            loss, _ = composite_loss(y_pred, y_batch, prev_batch,
-                                                alpha=params['loss_alpha'],
-                                                beta=params['loss_beta'],
-                                                gamma=params['loss_gamma'],
-                                                delta=params['loss_delta'])
+                            loss = criterion(y_pred, y_batch, prev_batch)
                             val_loss += loss.item()
                         
                         val_loss /= len(val_loader)
+                        
+                        # 스케줄러 업데이트
+                        scheduler.step(val_loss)
                         
                         if val_loss < best_val_loss:
                             best_val_loss = val_loss
@@ -4999,10 +4968,8 @@ def train_model(features, target_col, current_date, historical_data, device, par
         learning_rate = params.get('learning_rate', 0.001)
         num_epochs = params.get('num_epochs', 100)
         batch_size = params.get('batch_size', 32)
-        alpha = params.get('loss_alpha', 0.6)  # MSE 가중치
-        beta = params.get('loss_beta', 0.2)    # Volatility 가중치
-        gamma = params.get('loss_gamma', 0.15)  # 방향성 가중치
-        delta = params.get('loss_delta', 0.05)  # 연속성 가중치
+        alpha = params.get('loss_alpha', 0.7)  # DirectionalLoss alpha
+        beta = params.get('loss_beta', 0.2)    # DirectionalLoss beta
         patience = params.get('patience', 20)   # 조기 종료 인내
         predict_window = params.get('predict_window', 23)  # 예측 기간
         
@@ -5046,8 +5013,15 @@ def train_model(features, target_col, current_date, historical_data, device, par
             output_size=predict_window
         ).to(device)
         
-        # 최적화기 및 손실 함수
+        # 손실 함수 생성 
+        criterion = DirectionalLoss(alpha=alpha, beta=beta)
+        
+        # 최적화기 및 스케줄러
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5,
+            patience=patience//2, verbose=False
+        )
         
         # 학습
         best_val_loss = float('inf')
@@ -5062,10 +5036,7 @@ def train_model(features, target_col, current_date, historical_data, device, par
             for X_batch, y_batch, prev_batch in train_loader:
                 optimizer.zero_grad()
                 y_pred = model(X_batch, prev_batch)
-                loss, _ = composite_loss(
-                    y_pred, y_batch, prev_batch,
-                    alpha=alpha, beta=beta, gamma=gamma, delta=delta
-                )
+                loss = criterion(y_pred, y_batch, prev_batch)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -5078,13 +5049,13 @@ def train_model(features, target_col, current_date, historical_data, device, par
             with torch.no_grad():
                 for X_batch, y_batch, prev_batch in val_loader:
                     y_pred = model(X_batch, prev_batch)
-                    loss, _ = composite_loss(
-                        y_pred, y_batch, prev_batch,
-                        alpha=alpha, beta=beta, gamma=gamma, delta=delta
-                    )
+                    loss = criterion(y_pred, y_batch, prev_batch)
                     val_loss += loss.item()
                 
                 val_loss /= len(val_loader)
+                
+                # 스케줄러 업데이트
+                scheduler.step(val_loss)
                 
                 # 모델 저장 (최적)
                 if val_loss < best_val_loss:
@@ -5216,7 +5187,7 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
             current_period=prediction_semimonthly_period,  # ✅ 예측 시작일의 반월 기간
             file_path=file_path,  # 🔑 파일 경로 전달
             n_trials=30,
-            k_folds=5,
+            k_folds=10,
             use_cache=True
         )
         
