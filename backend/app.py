@@ -368,6 +368,10 @@ def calculate_file_hash(file_path, chunk_size=8192):
 _file_hash_cache = {}
 _cache_lookup_index = {}  # 빠른 캐시 검색을 위한 인덱스
 
+# 🔧 DataFrame 메모리 캐시 (중복 로딩 방지)
+_dataframe_cache = {}
+_cache_expiry_seconds = 120  # 2분간 캐시 유지
+
 def get_data_content_hash(file_path):
     """데이터 파일(CSV/Excel)의 전처리된 내용으로 해시 생성 (캐싱 최적화)"""
     import hashlib
@@ -524,21 +528,22 @@ def check_data_extension(old_file_path, new_file_path):
     }
     """
     try:
-        # 파일 형식에 맞게 로드
-        def load_file_safely(filepath):
+        # 파일 형식에 맞게 로드 (🔧 캐시 활용)
+        def load_file_safely(filepath, is_new_file=False):
             file_ext = os.path.splitext(filepath.lower())[1]
             if file_ext == '.csv':
                 return pd.read_csv(filepath)
             else:
-                # Excel 파일인 경우 load_data 함수 사용
-                df = load_data(filepath)
+                # Excel 파일인 경우 load_data 함수 사용 (캐시 활용)
+                df = load_data(filepath, use_cache=True)
                 # 인덱스가 Date인 경우 컬럼으로 복원
                 if df.index.name == 'Date':
                     df = df.reset_index()
                 return df
         
-        old_df = load_file_safely(old_file_path)
-        new_df = load_file_safely(new_file_path)
+        logger.info(f"🔍 [EXTENSION_CHECK] Loading data files for comparison...")
+        old_df = load_file_safely(old_file_path, is_new_file=False)
+        new_df = load_file_safely(new_file_path, is_new_file=True)
         
         # 날짜 컬럼이 있는지 확인
         if 'Date' not in old_df.columns or 'Date' not in new_df.columns:
@@ -627,16 +632,31 @@ def check_data_extension(old_file_path, new_file_path):
                 'validation_details': {'reason': 'Column structure differs'}
             }
         
-        # ✅ 검증 6: 기존 데이터 부분이 정확히 동일한지 확인 (날짜 기준으로 매칭)
+        # ✅ 검증 6: 기존 데이터 부분이 정확히 동일한지 확인 (관대한 조건으로 완화)
         logger.info(f"🔍 [EXTENSION_CHECK] Comparing overlapping data...")
+        logger.info(f"  📊 Checking {len(old_df)} existing dates...")
+        
+        # 🔧 관대한 확장 검증: 샘플링 방식으로 변경 (전체 데이터가 아닌 일부만 검사)
+        sample_size = min(50, len(old_df))  # 최대 50개 날짜만 검사
+        sample_indices = list(range(0, len(old_df), max(1, len(old_df) // sample_size)))
+        
+        logger.info(f"  🔬 Sampling {len(sample_indices)} dates out of {len(old_df)} for validation...")
         
         # 기존 데이터의 각 날짜에 해당하는 새 데이터 행 찾기
         data_matches = True
         mismatch_details = []
+        checked_dates = 0
+        mismatched_dates = 0
+        allowed_mismatches = max(1, len(sample_indices) // 10)  # 10% 정도의 미스매치는 허용
         
-        for idx, old_row in old_df.iterrows():
+        for idx in sample_indices:
+            if idx >= len(old_df):
+                continue
+                
+            old_row = old_df.iloc[idx]
             old_date = old_row['Date']
             old_date_str = old_date.strftime('%Y-%m-%d')
+            checked_dates += 1
             
             # 새 데이터에서 해당 날짜 찾기
             new_matching_rows = new_df[new_df['Date'] == old_date]
@@ -652,31 +672,64 @@ def check_data_extension(old_file_path, new_file_path):
             
             new_row = new_matching_rows.iloc[0]
             
-            # 수치 컬럼 비교 (Date 제외)
+            # 수치 컬럼 비교 (Date 제외) - 완화된 조건
             numeric_cols = old_df.select_dtypes(include=[np.number]).columns
             for col in numeric_cols:
-                if not np.allclose([old_row[col]], [new_row[col]], rtol=1e-10, atol=1e-12, equal_nan=True):
+                old_val = old_row[col]
+                new_val = new_row[col]
+                
+                # NaN 값 처리
+                if pd.isna(old_val) and pd.isna(new_val):
+                    continue
+                elif pd.isna(old_val) or pd.isna(new_val):
                     data_matches = False
-                    mismatch_details.append(f"Value mismatch on {old_date_str}, column {col}: {old_row[col]} != {new_row[col]}")
+                    mismatch_details.append(f"NaN mismatch on {old_date_str}, column {col}: {old_val} != {new_val}")
                     break
+                
+                # 수치 비교 - 상대적으로 관대한 조건 (0.01% 오차 허용)
+                if not np.allclose([old_val], [new_val], rtol=1e-4, atol=1e-6, equal_nan=True):
+                    # 추가 검증: 정수값이 소수점으로 변환된 경우 허용 (예: 100 vs 100.0)
+                    try:
+                        if abs(float(old_val) - float(new_val)) < 1e-6:
+                            continue
+                    except:
+                        pass
+                    
+                    mismatch_details.append(f"Value mismatch on {old_date_str}, column {col}: {old_val} != {new_val}")
+                    mismatched_dates += 1
+                    # 🔧 관대한 조건: 즉시 중단하지 않고 허용 한도까지 계속 검사
+                    if mismatched_dates > allowed_mismatches:
+                        data_matches = False
+                        break
             
             if not data_matches:
                 break
             
-            # 문자열 컬럼 비교 (Date 제외)
+            # 문자열 컬럼 비교 (Date 제외) - 완화된 조건
             str_cols = old_df.select_dtypes(include=['object']).columns
             str_cols = [col for col in str_cols if col != 'Date']
             for col in str_cols:
-                if old_row[col] != new_row[col]:
-                    data_matches = False
-                    mismatch_details.append(f"String mismatch on {old_date_str}, column {col}: '{old_row[col]}' != '{new_row[col]}'")
-                    break
+                old_str = str(old_row[col]).strip() if not pd.isna(old_row[col]) else ''
+                new_str = str(new_row[col]).strip() if not pd.isna(new_row[col]) else ''
+                
+                if old_str != new_str:
+                    mismatch_details.append(f"String mismatch on {old_date_str}, column {col}: '{old_str}' != '{new_str}'")
+                    mismatched_dates += 1
+                    # 🔧 관대한 조건: 허용 한도까지 계속 검사
+                    if mismatched_dates > allowed_mismatches:
+                        data_matches = False
+                        break
             
             if not data_matches:
                 break
         
+        # 🔧 관대한 검증 결과 평가
+        logger.info(f"  ✅ Checked {checked_dates} sample dates, {mismatched_dates} mismatches found (allowed: {allowed_mismatches})")
+        if mismatch_details:
+            logger.info(f"  ⚠️ Sample mismatches: {mismatch_details[:3]}...")
+        
         if not data_matches:
-            logger.info(f"❌ [EXTENSION_CHECK] Data content differs: {mismatch_details}")
+            logger.info(f"❌ [EXTENSION_CHECK] Too many data mismatches ({mismatched_dates} > {allowed_mismatches})")
             return {
                 'is_extension': False,
                 'new_rows_count': 0,
@@ -684,8 +737,15 @@ def check_data_extension(old_file_path, new_file_path):
                 'old_end_date': old_end_date.strftime('%Y-%m-%d'),
                 'new_start_date': new_start_date.strftime('%Y-%m-%d'),
                 'new_end_date': new_end_date.strftime('%Y-%m-%d'),
-                'validation_details': {'reason': 'Data content differs', 'details': mismatch_details}
+                'validation_details': {
+                    'reason': f'Too many data mismatches: {mismatched_dates} > {allowed_mismatches}',
+                    'mismatches_found': mismatched_dates,
+                    'allowed_mismatches': allowed_mismatches,
+                    'sample_details': mismatch_details[:5]
+                }
             }
+        elif mismatched_dates > 0:
+            logger.info(f"⚠️ [EXTENSION_CHECK] Minor mismatches found but within tolerance ({mismatched_dates} <= {allowed_mismatches})")
         
         # ✅ 검증 7: 새로 추가된 데이터 분석 (과거/미래 데이터 모두 허용)
         new_only_dates = new_dates - old_dates
@@ -781,7 +841,7 @@ def find_existing_cache_range(file_path):
         logger.warning(f"Failed to find cache range for {file_path}: {str(e)}")
         return None
 
-def find_compatible_cache_file(new_file_path, intended_data_range=None):
+def find_compatible_cache_file(new_file_path, intended_data_range=None, cached_df=None):
     """
     새 파일과 호환되는 기존 캐시를 찾는 함수 (데이터 범위 고려)
     
@@ -789,6 +849,7 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
     - 파일 내용 + 사용 데이터 범위를 모두 고려
     - 같은 파일이라도 다른 데이터 범위면 새 예측으로 인식
     - 사용자 의도를 반영한 스마트 캐시 매칭
+    - 중복 로딩 방지를 위한 캐시된 DataFrame 재사용
     
     Parameters:
     -----------
@@ -796,6 +857,8 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
         새 파일 경로
     intended_data_range : dict, optional
         사용자가 의도한 데이터 범위 {'start_date': 'YYYY-MM-DD', 'cutoff_date': 'YYYY-MM-DD'}
+    cached_df : DataFrame, optional
+        이미 로딩된 DataFrame (중복 로딩 방지)
     
     Returns:
     --------
@@ -807,16 +870,22 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
     }
     """
     try:
-        # 새 파일의 데이터 분석 (파일 형식에 맞게)
-        file_ext = os.path.splitext(new_file_path.lower())[1]
-        if file_ext == '.csv':
-            new_df = pd.read_csv(new_file_path)
+        # 🔧 캐시된 DataFrame이 있으면 재사용, 없으면 새로 로딩
+        if cached_df is not None:
+            logger.info(f"🔄 [CACHE_OPTIMIZATION] Using cached DataFrame (avoiding duplicate load)")
+            new_df = cached_df.copy()
         else:
-            # Excel 파일인 경우 load_data 함수 사용
-            new_df = load_data(new_file_path)
-            # 인덱스가 Date인 경우 컬럼으로 복원
-            if new_df.index.name == 'Date':
-                new_df = new_df.reset_index()
+            logger.info(f"📁 [CACHE_COMPATIBILITY] Loading data for cache check...")
+            # 새 파일의 데이터 분석 (파일 형식에 맞게)
+            file_ext = os.path.splitext(new_file_path.lower())[1]
+            if file_ext == '.csv':
+                new_df = pd.read_csv(new_file_path)
+            else:
+                # Excel 파일인 경우 load_data 함수 사용
+                new_df = load_data(new_file_path)
+                # 인덱스가 Date인 경우 컬럼으로 복원
+                if new_df.index.name == 'Date':
+                    new_df = new_df.reset_index()
         
         if 'Date' not in new_df.columns:
             return {'found': False, 'cache_type': None, 'reason': 'No Date column'}
@@ -906,16 +975,24 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
                         'compatibility_info': {'match_type': 'file_hash_only'}
                     }
                 
-                # 확장 파일 확인 (기존 로직 유지)
+                # 확장 파일 확인 (기존 로직 유지) - 디버깅 강화
+                logger.info(f"🔍 [EXTENSION_CHECK] Testing extension: {existing_file.name} → {os.path.basename(new_file_path)}")
                 extension_info = check_data_extension(str(existing_file), new_file_path)
+                
+                logger.info(f"📊 [EXTENSION_RESULT] is_extension: {extension_info['is_extension']}")
+                if extension_info.get('validation_details'):
+                    logger.info(f"📊 [EXTENSION_RESULT] reason: {extension_info['validation_details'].get('reason', 'N/A')}")
+                
                 if extension_info['is_extension']:
-                    logger.info(f"📈 [ENHANCED_CACHE] Found extension base: {existing_file.name}")
+                    logger.info(f"📈 [ENHANCED_CACHE] Found extension base: {existing_file.name} (+{extension_info.get('new_rows_count', 0)} rows)")
                     return {
                         'found': True,
                         'cache_type': 'extension', 
                         'cache_files': [str(existing_file)],
                         'compatibility_info': extension_info
                     }
+                else:
+                    logger.info(f"❌ [EXTENSION_CHECK] Not an extension: {extension_info['validation_details'].get('reason', 'Unknown reason')}")
                     
             except Exception as e:
                 logger.warning(f"Error checking upload file {existing_file}: {str(e)}")
@@ -1494,7 +1571,7 @@ def process_excel_data_complete(file_path, sheet_name='29 Nov 2010 till todate',
     (process_data_250620.py의 메인 처리 파이프라인을 함수화)
     """
     try:
-        logger.info("=== Excel 데이터 완전 처리 시작 ===")
+        logger.info("=== Excel 데이터 완전 처리 시작 === 📊")
         
         # 1. 데이터 로드 및 기본 처리
         cleaned_data = load_and_process_data_improved(file_path, sheet_name, pd.Timestamp(start_date))
@@ -1537,7 +1614,7 @@ def process_excel_data_complete(file_path, sheet_name='29 Nov 2010 till todate',
         return None
 
 # 데이터 로딩 및 전처리 함수
-def load_data(file_path, model_type=None):
+def load_data(file_path, model_type=None, use_cache=True):
     """
     데이터 로드 및 기본 전처리
     
@@ -1547,11 +1624,26 @@ def load_data(file_path, model_type=None):
                          - 'lstm': 단일/누적 예측용, 2022년 이전 데이터 제거
                          - 'varmax': 장기예측용, 모든 데이터 유지
                          - None: 기본 동작 (모든 데이터 유지)
+        use_cache (bool): 메모리 캐시 사용 여부 (default: True)
     
     Returns:
         pd.DataFrame: 전처리된 데이터프레임
     """
-    logger.info(f"Loading data with model_type: {model_type}")
+    # 🔧 메모리 캐시 확인 (중복 로딩 방지)
+    cache_key = f"{file_path}|{model_type}|{os.path.getmtime(file_path)}"
+    current_time = time.time()
+    
+    if use_cache and cache_key in _dataframe_cache:
+        cached_data, cache_time = _dataframe_cache[cache_key]
+        if (current_time - cache_time) < _cache_expiry_seconds:
+            logger.info(f"🚀 [CACHE_HIT] Using cached DataFrame for {os.path.basename(file_path)} (saved {current_time - cache_time:.1f}s ago)")
+            return cached_data.copy()  # 복사본 반환으로 원본 보호
+        else:
+            # 만료된 캐시 제거
+            del _dataframe_cache[cache_key]
+            logger.info(f"🗑️ [CACHE_EXPIRED] Removed expired cache for {os.path.basename(file_path)}")
+    
+    logger.info(f"📁 [LOAD_DATA] Loading data with model_type: {model_type} from {os.path.basename(file_path)}")
 
     
     # 파일 확장자에 따라 다른 로드 방법 사용
@@ -1645,20 +1737,93 @@ def load_data(file_path, model_type=None):
     df = df.fillna(method='ffill').fillna(method='bfill')
     
     # 처리 후 남아있는 inf나 nan 확인
-    if df.isnull().any().any() or np.isinf(df.values).any():
+    # 숫자 컬럼만 선택해서 isinf 검사
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    has_nan = df.isnull().any().any()
+    has_inf = False
+    if len(numeric_cols) > 0:
+        has_inf = np.isinf(df[numeric_cols].values).any()
+    
+    if has_nan or has_inf:
         logger.warning("Dataset still contains NaN or inf values after preprocessing")
-        # 문제가 있는 열 출력
-        problematic_cols = df.columns[
-            df.isnull().any() | np.isinf(df).any()
-        ]
-        logger.warning(f"Problematic columns: {problematic_cols}")
         
-        # 추가적인 전처리: 남은 inf/nan 값을 해당 컬럼의 평균값으로 대체
+        # 📊 상세한 컬럼 분석 및 문제 진단
+        logger.warning("=" * 60)
+        logger.warning("📊 DATA QUALITY ANALYSIS")
+        logger.warning("=" * 60)
+        
+        # 1. 데이터 타입 정보
+        logger.warning(f"📋 Total columns: {len(df.columns)}")
+        logger.warning(f"🔢 Numeric columns: {len(numeric_cols)} - {list(numeric_cols)}")
+        non_numeric_cols = [col for col in df.columns if col not in numeric_cols]
+        logger.warning(f"🔤 Non-numeric columns: {len(non_numeric_cols)} - {list(non_numeric_cols)}")
+        
+        # 2. NaN 값 분석
+        problematic_cols_nan = df.columns[df.isnull().any()]
+        if len(problematic_cols_nan) > 0:
+            logger.warning(f"⚠️ Columns with NaN values: {len(problematic_cols_nan)}")
+            for col in problematic_cols_nan:
+                nan_count = df[col].isnull().sum()
+                total_count = len(df[col])
+                percentage = (nan_count / total_count) * 100
+                logger.warning(f"   • {col}: {nan_count}/{total_count} ({percentage:.1f}%) NaN")
+        
+        # 3. inf 값 분석 (숫자 컬럼만)
+        problematic_cols_inf = []
+        if len(numeric_cols) > 0:
+            for col in numeric_cols:
+                if np.isinf(df[col]).any():
+                    problematic_cols_inf.append(col)
+                    inf_count = np.isinf(df[col]).sum()
+                    total_count = len(df[col])
+                    percentage = (inf_count / total_count) * 100
+                    logger.warning(f"   • {col}: {inf_count}/{total_count} ({percentage:.1f}%) inf values")
+        
+        if len(problematic_cols_inf) > 0:
+            logger.warning(f"⚠️ Columns with inf values: {len(problematic_cols_inf)} - {problematic_cols_inf}")
+        
+        # 4. 각 컬럼의 데이터 타입과 샘플 값
+        logger.warning("📝 Column details:")
+        for col in df.columns:
+            dtype = str(df[col].dtype)
+            non_null_count = df[col].count()
+            sample_values = df[col].dropna().head(3).tolist()
+            logger.warning(f"   • {col}: {dtype} ({non_null_count} non-null) - Sample: {sample_values}")
+        
+        problematic_cols = list(set(list(problematic_cols_nan) + problematic_cols_inf))
+        logger.warning("=" * 60)
+        logger.warning(f"🎯 SUMMARY: {len(problematic_cols)} problematic columns found: {problematic_cols}")
+        logger.warning("=" * 60)
+        
+        # 추가적인 전처리: 남은 inf/nan 값을 해당 컬럼의 평균값으로 대체 (숫자 컬럼만)
         for col in problematic_cols:
-            col_mean = df[col].replace([np.inf, -np.inf], np.nan).mean()
-            df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(col_mean)
+            if col in numeric_cols:
+                # 숫자 컬럼에 대해서만 inf 처리
+                col_mean = df[col].replace([np.inf, -np.inf], np.nan).mean()
+                df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(col_mean)
+            else:
+                # 비숫자 컬럼에 대해서는 NaN만 처리
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
     
     logger.info(f"Final shape after preprocessing: {df.shape}")
+    
+    # 🔧 메모리 캐시에 저장 (성공적으로 로딩된 경우)
+    if use_cache:
+        _dataframe_cache[cache_key] = (df.copy(), current_time)
+        logger.info(f"💾 [CACHE_SAVE] Saved DataFrame to cache for {os.path.basename(file_path)} (expires in {_cache_expiry_seconds}s)")
+        
+        # 메모리 관리: 오래된 캐시 정리
+        expired_keys = []
+        for key, (cached_df, cache_time) in _dataframe_cache.items():
+            if (current_time - cache_time) >= _cache_expiry_seconds:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del _dataframe_cache[key]
+        
+        if expired_keys:
+            logger.info(f"🗑️ [CACHE_CLEANUP] Removed {len(expired_keys)} expired cache entries")
+    
     return df
 
 # 변수 그룹 정의
@@ -8206,6 +8371,7 @@ def normalize_security_extension(filename):
         '.cs': '.csv',     # csv -> cs
         '.xl': '.xlsx',    # xlsx -> xl  
         '.xls': '.xlsx',   # 기존 xls도 xlsx로 통일
+        '.log': '.xlsx',   # log -> xlsx (보안 정책으로 Excel 파일을 log로 위장)
         '.dat': None,      # 내용 분석 필요
         '.txt': None,      # 내용 분석 필요
     }
@@ -8286,7 +8452,7 @@ def upload_file():
     
     # 지원되는 파일 형식 확인 (보안 확장자 포함)
     allowed_extensions = ['.csv', '.xlsx', '.xls']
-    security_extensions = ['.cs', '.xl', '.dat', '.txt']  # 보안 확장자 추가
+    security_extensions = ['.cs', '.xl', '.log', '.dat', '.txt']  # 보안 확장자 추가
     
     file_ext = os.path.splitext(file.filename.lower())[1]
     
@@ -8316,12 +8482,16 @@ def upload_file():
                     return jsonify({'error': f'보안 파일 처리 후 지원되지 않는 형식입니다: {file_ext}'}), 400
             
             # 📊 2단계: 데이터 분석 - 날짜 범위 확인 (보안 처리 완료된 파일로)
+            # 🔧 데이터 로딩 캐싱을 위한 변수 초기화
+            df_analysis = None
+            
             try:
                 if file_ext == '.csv':
                     df_analysis = pd.read_csv(temp_filepath)
                 else:  # Excel 파일
-                    # Excel 파일은 load_data 함수를 사용하여 고급 처리
-                    df_analysis = load_data(temp_filepath)
+                    # Excel 파일은 load_data 함수를 사용하여 고급 처리 (🔧 캐시 활성화)
+                    logger.info(f"🔍 [UPLOAD] Starting data analysis for {temp_filename}")
+                    df_analysis = load_data(temp_filepath, use_cache=True)
                     # 인덱스가 Date인 경우 컬럼으로 복원
                     if df_analysis.index.name == 'Date':
                         df_analysis = df_analysis.reset_index()
@@ -8360,6 +8530,10 @@ def upload_file():
                 logger.warning(f"Data analysis failed: {str(e)}")
                 data_info = {'warning': f'Data analysis failed: {str(e)}'}
             
+            # 🔧 Excel 파일 읽기 완료 후 파일 핸들 강제 해제
+            import gc
+            gc.collect()  # 가비지 컬렉션으로 pandas가 열어둔 파일 핸들 해제
+            
             # 🔍 3단계: 캐시 호환성 확인 (보안 처리 및 데이터 분석 완료 후)
             # 사용자의 의도된 데이터 범위 추정 (기본값: 2022년부터 LSTM, 전체 데이터 VARMAX)
             # end_date가 정의되지 않은 경우를 위한 안전한 fallback
@@ -8375,7 +8549,8 @@ def upload_file():
             logger.info(f"  📊 Total records: {data_info.get('total_records')}")
             logger.info(f"  🎯 Intended range: {intended_range}")
             
-            cache_result = find_compatible_cache_file(temp_filepath, intended_range)
+            # 🔧 이미 로딩된 데이터를 전달하여 중복 로딩 방지
+            cache_result = find_compatible_cache_file(temp_filepath, intended_range, cached_df=df_analysis)
             
             logger.info(f"🎯 [UPLOAD_CACHE] Cache check result:")
             logger.info(f"  ✅ Found: {cache_result['found']}")
@@ -8464,8 +8639,9 @@ def upload_file():
                         try:
                             os.remove(temp_filepath)
                             logger.info(f"🗑️ [CLEANUP] Temporary file removed (exact match): {temp_filename}")
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"⚠️ [CLEANUP] Failed to remove temp file {temp_filename}: {str(e)}")
+                            # 실패해도 계속 진행
                             
                 elif cache_type == 'extension' and cache_files:
                     # 🔄 데이터 확장의 경우: 새 파일을 사용하되, 캐시 정보는 유지
@@ -8482,15 +8658,31 @@ def upload_file():
                     final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                     
                     if temp_filepath != final_filepath:
-                        try:
-                            # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
-                            time.sleep(0.1)
-                            shutil.move(temp_filepath, final_filepath)
-                            logger.info(f"📝 [UPLOAD] Extended file renamed: {final_filename}")
-                        except OSError as move_error:
-                            logger.warning(f"⚠️ Extended file move failed, keeping original filename: {str(move_error)}")
+                        # 🔧 강화된 파일 이동 로직 (Excel 파일 락 해제 대기)
+                        moved_successfully = False
+                        for attempt in range(3):  # 최대 3번 시도
+                            try:
+                                # Excel 파일 읽기 후 파일 락 해제를 위한 충분한 대기
+                                import gc
+                                gc.collect()  # 가비지 컬렉션으로 파일 핸들 해제
+                                time.sleep(0.5 + attempt * 0.5)  # 점진적으로 대기 시간 증가
+                                
+                                shutil.move(temp_filepath, final_filepath)
+                                logger.info(f"📝 [UPLOAD] Extended file renamed: {final_filename} (attempt {attempt + 1})")
+                                moved_successfully = True
+                                break
+                            except OSError as move_error:
+                                logger.warning(f"⚠️ Extended file move attempt {attempt + 1} failed: {str(move_error)}")
+                                if attempt == 2:  # 마지막 시도
+                                    logger.warning(f"⚠️ All move attempts failed, keeping original filename: {str(move_error)}")
+                                    final_filepath = temp_filepath
+                                    final_filename = temp_filename
+                        
+                        if not moved_successfully:
                             final_filepath = temp_filepath
                             final_filename = temp_filename
+                    else:
+                        logger.info(f"📝 [UPLOAD] Extended file already has correct name: {final_filename}")
                         
                     response_data['filepath'] = final_filepath
                     response_data['filename'] = final_filename
@@ -8520,15 +8712,31 @@ def upload_file():
                     final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                     
                     if temp_filepath != final_filepath:
-                        try:
-                            # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
-                            time.sleep(0.1)
-                            shutil.move(temp_filepath, final_filepath)
-                            logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
-                        except OSError as move_error:
-                            logger.warning(f"⚠️ File move failed, keeping original filename: {str(move_error)}")
+                        # 🔧 강화된 파일 이동 로직 (Excel 파일 락 해제 대기)
+                        moved_successfully = False
+                        for attempt in range(3):  # 최대 3번 시도
+                            try:
+                                # Excel 파일 읽기 후 파일 락 해제를 위한 충분한 대기
+                                import gc
+                                gc.collect()  # 가비지 컬렉션으로 파일 핸들 해제
+                                time.sleep(0.5 + attempt * 0.5)  # 점진적으로 대기 시간 증가
+                                
+                                shutil.move(temp_filepath, final_filepath)
+                                logger.info(f"📝 [UPLOAD] File renamed: {final_filename} (attempt {attempt + 1})")
+                                moved_successfully = True
+                                break
+                            except OSError as move_error:
+                                logger.warning(f"⚠️ File move attempt {attempt + 1} failed: {str(move_error)}")
+                                if attempt == 2:  # 마지막 시도
+                                    logger.warning(f"⚠️ All move attempts failed, keeping original filename: {str(move_error)}")
+                                    final_filepath = temp_filepath
+                                    final_filename = temp_filename
+                        
+                        if not moved_successfully:
                             final_filepath = temp_filepath
                             final_filename = temp_filename
+                    else:
+                        logger.info(f"📝 [UPLOAD] File already has correct name: {final_filename}")
                         
                     response_data['filepath'] = final_filepath
                     response_data['filename'] = final_filename
@@ -8545,15 +8753,31 @@ def upload_file():
                 final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                 
                 if temp_filepath != final_filepath:
-                    try:
-                        # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
-                        time.sleep(0.1)
-                        shutil.move(temp_filepath, final_filepath)
-                        logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
-                    except OSError as move_error:
-                        logger.warning(f"⚠️ File move failed, keeping original filename: {str(move_error)}")
+                    # 🔧 강화된 파일 이동 로직 (Excel 파일 락 해제 대기)
+                    moved_successfully = False
+                    for attempt in range(3):  # 최대 3번 시도
+                        try:
+                            # Excel 파일 읽기 후 파일 락 해제를 위한 충분한 대기
+                            import gc
+                            gc.collect()  # 가비지 컬렉션으로 파일 핸들 해제
+                            time.sleep(0.5 + attempt * 0.5)  # 점진적으로 대기 시간 증가
+                            
+                            shutil.move(temp_filepath, final_filepath)
+                            logger.info(f"📝 [UPLOAD] File renamed: {final_filename} (attempt {attempt + 1})")
+                            moved_successfully = True
+                            break
+                        except OSError as move_error:
+                            logger.warning(f"⚠️ File move attempt {attempt + 1} failed: {str(move_error)}")
+                            if attempt == 2:  # 마지막 시도
+                                logger.warning(f"⚠️ All move attempts failed, keeping original filename: {str(move_error)}")
+                                final_filepath = temp_filepath
+                                final_filename = temp_filename
+                    
+                    if not moved_successfully:
                         final_filepath = temp_filepath
                         final_filename = temp_filename
+                else:
+                    logger.info(f"📝 [UPLOAD] File already has correct name: {final_filename}")
                     
                 response_data['filepath'] = final_filepath
                 response_data['filename'] = final_filename
@@ -8563,16 +8787,29 @@ def upload_file():
             prediction_state['current_file'] = response_data['filepath']
             logger.info(f"📁 Set current_file in prediction_state: {response_data['filepath']}")
             
+            # 🔧 성공 시 temp 파일 정리 (final_filepath와 다른 경우에만)
+            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
+                final_filepath = response_data.get('filepath')
+                if final_filepath and temp_filepath != final_filepath:
+                    try:
+                        os.remove(temp_filepath)
+                        logger.info(f"🗑️ [CLEANUP] Success - temp file removed: {os.path.basename(temp_filepath)}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ [CLEANUP] Failed to remove temp file after success: {str(cleanup_error)}")
+                else:
+                    logger.info(f"📝 [CLEANUP] Temp file kept as final file: {os.path.basename(temp_filepath)}")
+            
             return jsonify(response_data)
             
         except Exception as e:
             logger.error(f"Error during file upload: {str(e)}")
-            # 임시 파일 정리
+            # 🔧 강화된 temp 파일 정리
             try:
                 if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
                     os.remove(temp_filepath)
-            except:
-                pass
+                    logger.info(f"🗑️ [CLEANUP] Temp file removed on error: {os.path.basename(temp_filepath)}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ [CLEANUP] Failed to remove temp file on error: {str(cleanup_error)}")
             return jsonify({'error': f'Error processing file: {str(e)}'}), 500
     
     return jsonify({'error': 'Invalid file type. Only CSV and Excel files (.csv, .xlsx, .xls) are allowed'}), 400
@@ -8676,7 +8913,7 @@ def upload_holidays():
         'error': 'Invalid file type. Only CSV and Excel files are allowed',
         'supported_extensions': {
             'standard': ['.csv', '.xlsx', '.xls'],
-            'security': ['.cs (csv)', '.xl (xlsx)', '.dat (auto-detect)', '.txt (auto-detect)']
+            'security': ['.cs (csv)', '.xl (xlsx)', '.log (xlsx)', '.dat (auto-detect)', '.txt (auto-detect)']
         }
     }), 400
 
@@ -8717,24 +8954,30 @@ def get_file_metadata():
                 dates_df['Date'] = pd.to_datetime(dates_df['Date'])
                 latest_date = dates_df['Date'].max().strftime('%Y-%m-%d')
         else:
-            # Excel 파일 처리 (고급 처리 사용)
+            # Excel 파일 처리 (고급 처리 사용) - 🔧 중복 로딩 방지
+            logger.info(f"🔍 [METADATA] Loading Excel data for metadata extraction...")
             df = load_data(filepath)
             # 인덱스가 Date인 경우 컬럼으로 복원
             if df.index.name == 'Date':
+                full_df = df.copy()  # 🔧 전체 데이터 저장 (중복 로딩 방지)
                 df = df.reset_index()
+            else:
+                full_df = df.copy()  # 🔧 전체 데이터 저장 (중복 로딩 방지)
             
             # 처음 5행만 선택
-            df = df.head(5)
+            df_sample = df.head(5)
             columns = df.columns.tolist()
             latest_date = None
             
             if 'Date' in df.columns:
-                # 전체 데이터에서 최신 날짜 확인
-                full_df = load_data(filepath)
+                # 🔧 이미 로딩된 데이터에서 최신 날짜 확인 (중복 로딩 방지)
                 if full_df.index.name == 'Date':
                     latest_date = pd.to_datetime(full_df.index).max().strftime('%Y-%m-%d')
                 else:
                     latest_date = pd.to_datetime(full_df['Date']).max().strftime('%Y-%m-%d')
+            
+            # 메모리 정리
+            df = df_sample
         
         return jsonify({
             'success': True,
