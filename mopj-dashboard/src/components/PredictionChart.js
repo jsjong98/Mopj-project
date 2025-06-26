@@ -72,16 +72,23 @@ const PredictionChart = ({ data, title }) => {
                 return ['데이터 없음', name === "Prediction" ? "예측 가격" : "실제 가격"];
               }
               
-              // 데이터 키에 따라 정확한 라벨 표시
+              // dataKey로 정확한 라벨 매핑 (Line 컴포넌트의 dataKey와 일치)
               let label = "";
-              if (name === "Prediction") {
+              if (props && props.dataKey === "Prediction") {
                 label = "예측 가격";
-              } else if (name === "Actual") {
+              } else if (props && props.dataKey === "Actual") {
                 label = "실제 가격";
               } else {
-                // 기본적으로 예측 가격으로 처리 (안전장치)
-                label = "예측 가격";
-                console.warn('⚠️ [TOOLTIP] Unknown data key:', name, 'treating as prediction');
+                // name을 백업으로 사용
+                if (name === "예측 가격") {
+                  label = "예측 가격";
+                } else if (name === "실제 가격") {
+                  label = "실제 가격";
+                } else {
+                  // 최후의 수단: 기본값
+                  label = name || "알 수 없음";
+                  console.warn('⚠️ [TOOLTIP] Fallback label used:', name, props);
+                }
               }
               
               return [
@@ -93,18 +100,7 @@ const PredictionChart = ({ data, title }) => {
           />
           <Legend />
           
-          {/* 예측 가격 라인 (메인 - 먼저 표시하여 범례 상단에 위치) */}
-          <Line 
-            type="monotone" 
-            dataKey="Prediction" 
-            stroke="#ef4444" 
-            strokeWidth={2} 
-            name="예측 가격" 
-            dot={{ r: 4 }}
-            strokeDasharray="5 5"
-          />
-          
-          {/* 실제 가격 라인 (참조용 - 나중에 표시하여 범례 하단에 위치) */}
+          {/* 실제 가격 라인 (파란색 실선 - 먼저 표시하여 범례 상단에 위치) */}
           {data.some(item => item.Actual !== null && item.Actual !== undefined) && (
             <Line 
               type="monotone" 
@@ -116,6 +112,17 @@ const PredictionChart = ({ data, title }) => {
               activeDot={{ r: 6 }}
             />
           )}
+          
+          {/* 예측 가격 라인 (빨간색 점선 - 나중에 표시하여 범례 하단에 위치) */}
+          <Line 
+            type="monotone" 
+            dataKey="Prediction" 
+            stroke="#ef4444" 
+            strokeWidth={2} 
+            name="예측 가격" 
+            dot={{ r: 4 }}
+            strokeDasharray="5 5"
+          />
         </LineChart>
       </ResponsiveContainer>
     </div>
