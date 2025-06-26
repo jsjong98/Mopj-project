@@ -44,15 +44,12 @@ export const uploadCSV = async (file) => {
 // 사용 가능한 날짜 조회 (향상된 버전)
 export const getAvailableDates = async (filepath, forceRefresh = false) => {
   try {
-    // URL과 쿼리 파라미터 구성
-    const params = new URLSearchParams();
-    params.append('filepath', filepath);
+    const url = new URL(`${API_BASE_URL}/data/dates`);
+    url.searchParams.append('filepath', filepath);
     if (forceRefresh) {
-      params.append('force_refresh', 'true');
-      params.append('_t', new Date().getTime()); // 캐시 방지
+      url.searchParams.append('force_refresh', 'true');
+      url.searchParams.append('_t', new Date().getTime()); // 캐시 방지
     }
-    
-    const url = `${API_BASE_URL}/data/dates?${params.toString()}`;
     
     const response = await fetch(url, {
       headers: forceRefresh ? {
@@ -131,10 +128,15 @@ export const checkFileRefresh = async (filepath) => {
 };
 
 // 예측 시작
-export const startPrediction = async (filepath, date = null) => {
+export const startPrediction = async (filepath, date = null, options = {}) => {
   try {
     const payload = { filepath };
     if (date) payload.date = date;
+    
+    // 🔥 급등락 대응 모드 지원
+    if (options.volatileMode !== undefined) {
+      payload.volatile_mode = options.volatileMode;
+    }
     
     const response = await fetch(`${API_BASE_URL}/predict`, {
       method: 'POST',
@@ -902,6 +904,45 @@ export const resetVarmaxState = async () => {
     return { 
       error: error.message || 'VARMAX 상태 리셋 중 오류가 발생했습니다.',
       success: false 
+    };
+  }
+};
+
+// 최근 30일 시장 시황 데이터 조회
+export const getMarketStatus = async (filepath) => {
+  try {
+    console.log('🔍 [MARKET_STATUS] Requesting market status data...');
+    
+    const url = new URL(`${API_BASE_URL}/market-status`);
+    url.searchParams.append('file_path', filepath);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      },
+      mode: 'cors',
+      credentials: 'omit'
+    });
+    
+    if (!response.ok) {
+      throw new Error('시장 시황 데이터 조회 실패');
+    }
+    
+    const data = await response.json();
+    console.log('✅ [MARKET_STATUS] Data received:', {
+      date_range: data.date_range,
+      categories: Object.keys(data.categories || {}),
+      total_days: data.date_range?.total_days
+    });
+    
+    return data;
+  } catch (error) {
+    console.error('❌ [MARKET_STATUS] Error:', error);
+    return { 
+      success: false, 
+      error: error.message || '시장 시황 데이터 조회 중 오류가 발생했습니다.' 
     };
   }
 };
