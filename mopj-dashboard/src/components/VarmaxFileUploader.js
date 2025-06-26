@@ -56,8 +56,8 @@ const VarmaxFileUploader = ({
   onUploadNoDates,      // 새로 추가: 날짜 없는 CSV
   isLoading, 
   setIsLoading, 
-  acceptedFormats = '.csv', 
-  fileType = 'CSV' 
+  acceptedFormats = '.csv,.xlsx,.xls,.cs,.xl,.log,.dat,.txt', // 🔒 보안 확장자 추가
+  fileType = '데이터' 
 }) => {
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
@@ -117,13 +117,32 @@ const VarmaxFileUploader = ({
   };
 
   const handleFileUpload = async (file) => {
-    // 파일 형식 확인
-    const validExtensions = acceptedFormats.split(',');
+    // 🔒 보안 확장자를 포함한 파일 형식 확인
+    const validExtensions = acceptedFormats.split(',').map(ext => ext.trim());
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     
+    // 보안 확장자 정보
+    const securityExtensions = {
+      '.cs': 'CSV 파일 (보안 확장자)',
+      '.xl': 'Excel 파일 (보안 확장자)', 
+      '.log': 'Excel 파일 (보안 확장자)',
+      '.dat': '자동 감지 (보안 확장자)',
+      '.txt': '자동 감지 (보안 확장자)'
+    };
+    
     if (!validExtensions.includes(fileExtension)) {
-      setError(`지원되지 않는 파일 형식입니다. ${acceptedFormats} 파일만 업로드 가능합니다.`);
+      const securityInfo = securityExtensions[fileExtension] 
+        ? `\n💡 ${fileExtension} 확장자는 ${securityExtensions[fileExtension]}로 처리됩니다.`
+        : '';
+      
+      setError(`지원되지 않는 파일 형식입니다. 지원 형식: ${acceptedFormats}${securityInfo}`);
       return;
+    }
+    
+    // 보안 파일 업로드 시 사용자에게 알림
+    const isSecurityFile = Object.keys(securityExtensions).includes(fileExtension);
+    if (isSecurityFile) {
+      console.log(`🔒 [VARMAX_SECURITY] 보안 파일 업로드: ${file.name} (${securityExtensions[fileExtension]})`);
     }
     
     setIsLoading(true);
@@ -137,6 +156,13 @@ const VarmaxFileUploader = ({
       if (uploadResult.error) {
         setError(uploadResult.error);
         return;
+      }
+      
+      // 🔒 보안 파일 처리 결과 로깅
+      if (uploadResult.security_info && uploadResult.security_info.is_security_file) {
+        console.log('🔒 [VARMAX_SECURITY] 보안 파일 처리 완료:', uploadResult.security_info.message);
+        console.log('🔒 [VARMAX_SECURITY] 원본 확장자:', uploadResult.security_info.original_extension);
+        console.log('🔒 [VARMAX_SECURITY] 변환된 확장자:', uploadResult.security_info.detected_extension);
       }
       // 날짜 없는 CSV 전용 콜백
       onUploadNoDates({
