@@ -184,11 +184,6 @@ const CalendarDatePicker = ({
     )
   );
 
-  // 휴일을 Set으로 변환 (빠른 검색)
-  const holidaySet = new Set(
-    holidays.map(holiday => holiday.date)
-  );
-
   // 휴일 체크 함수
   const isHoliday = (dateKey) => {
     return holidays.find(holiday => holiday.date === dateKey);
@@ -197,12 +192,6 @@ const CalendarDatePicker = ({
   const getHolidayType = (dateKey) => {
     const holiday = holidays.find(h => h.date === dateKey);
     return holiday ? holiday.source : null;
-  };
-
-  // 반월 시작일 체크 함수
-  const isSemimonthlyStart = (date) => {
-    const day = date.getDate();
-    return day === 1 || day === 16;
   };
 
   // 예측 가능한 날짜에서 반월 시작일인지 체크
