@@ -8151,6 +8151,126 @@ def test_cache_dirs():
             'traceback': traceback.format_exc()
         }), 500
 
+def detect_file_type_by_content(file_path):
+    """
+    파일 내용을 분석하여 실제 파일 타입을 감지하는 함수
+    회사 보안으로 인해 확장자가 변경된 파일들을 처리
+    """
+    try:
+        # 파일의 첫 몇 바이트를 읽어서 파일 타입 감지
+        with open(file_path, 'rb') as f:
+            header = f.read(8)
+        
+        # Excel 파일 시그니처 확인
+        if header[:4] == b'PK\x03\x04':  # ZIP 기반 파일 (xlsx)
+            return 'xlsx'
+        elif header[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':  # OLE2 기반 파일 (xls)
+            return 'xls'
+        
+        # CSV 파일인지 확인 (텍스트 기반)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                # CSV 특성 확인: 쉼표나 탭이 포함되어 있고, Date 컬럼이 있는지
+                if (',' in first_line or '\t' in first_line) and ('date' in first_line.lower() or 'Date' in first_line):
+                    return 'csv'
+        except:
+            # UTF-8로 읽기 실패시 다른 인코딩 시도
+            try:
+                with open(file_path, 'r', encoding='cp949') as f:
+                    first_line = f.readline()
+                    if (',' in first_line or '\t' in first_line) and ('date' in first_line.lower() or 'Date' in first_line):
+                        return 'csv'
+            except:
+                pass
+        
+        # 기본값 반환
+        return None
+        
+    except Exception as e:
+        logger.warning(f"File type detection failed: {str(e)}")
+        return None
+
+def normalize_security_extension(filename):
+    """
+    회사 보안정책으로 변경된 확장자를 원래 확장자로 복원
+    
+    Args:
+        filename (str): 원본 파일명
+    
+    Returns:
+        tuple: (정규화된 파일명, 원본 확장자, 보안 확장자인지 여부)
+    """
+    # 보안 확장자 매핑
+    security_extensions = {
+        '.cs': '.csv',     # csv -> cs
+        '.xl': '.xlsx',    # xlsx -> xl  
+        '.xls': '.xlsx',   # 기존 xls도 xlsx로 통일
+        '.dat': None,      # 내용 분석 필요
+        '.txt': None,      # 내용 분석 필요
+    }
+    
+    filename_lower = filename.lower()
+    original_ext = os.path.splitext(filename_lower)[1]
+    
+    # 보안 확장자인지 확인
+    if original_ext in security_extensions:
+        if security_extensions[original_ext]:
+            # 직접 매핑이 있는 경우
+            normalized_ext = security_extensions[original_ext]
+            base_name = os.path.splitext(filename)[0]
+            normalized_filename = f"{base_name}{normalized_ext}"
+            
+            logger.info(f"🔒 [SECURITY] Extension normalization: {filename} -> {normalized_filename}")
+            return normalized_filename, normalized_ext, True
+        else:
+            # 내용 분석이 필요한 경우
+            return filename, original_ext, True
+    
+    # 일반 확장자인 경우
+    return filename, original_ext, False
+
+def process_security_file(temp_filepath, original_filename):
+    """
+    보안 정책으로 확장자가 변경된 파일을 처리
+    
+    Args:
+        temp_filepath (str): 임시 파일 경로
+        original_filename (str): 원본 파일명
+    
+    Returns:
+        tuple: (처리된 파일 경로, 정규화된 파일명, 실제 확장자)
+    """
+    # 확장자 정규화
+    normalized_filename, detected_ext, is_security_ext = normalize_security_extension(original_filename)
+    
+    if is_security_ext:
+        logger.info(f"🔒 [SECURITY] Processing security file: {original_filename}")
+        
+        # 파일 내용으로 실제 타입 감지
+        if detected_ext is None or detected_ext in ['.dat', '.txt']:
+            content_type = detect_file_type_by_content(temp_filepath)
+            if content_type:
+                detected_ext = f'.{content_type}'
+                base_name = os.path.splitext(normalized_filename)[0]
+                normalized_filename = f"{base_name}{detected_ext}"
+                logger.info(f"📊 [CONTENT_DETECTION] Detected file type: {content_type}")
+        
+        # 새로운 파일 경로 생성
+        new_filepath = temp_filepath.replace(os.path.splitext(temp_filepath)[1], detected_ext)
+        
+        # 파일 이름 변경 (확장자 수정)
+        if new_filepath != temp_filepath:
+            try:
+                shutil.move(temp_filepath, new_filepath)
+                logger.info(f"📝 [SECURITY] File extension corrected: {os.path.basename(temp_filepath)} -> {os.path.basename(new_filepath)}")
+                return new_filepath, normalized_filename, detected_ext
+            except Exception as e:
+                logger.warning(f"⚠️ [SECURITY] Failed to rename file: {str(e)}")
+                return temp_filepath, normalized_filename, detected_ext
+    
+    return temp_filepath, normalized_filename, detected_ext
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """스마트 캐시 기능이 있는 데이터 파일 업로드 API (CSV, Excel 지원)"""
@@ -8161,11 +8281,16 @@ def upload_file():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     
-    # 지원되는 파일 형식 확인
+    # 🔒 보안 확장자 정규화 처리
+    normalized_filename, normalized_ext, is_security_file = normalize_security_extension(file.filename)
+    
+    # 지원되는 파일 형식 확인 (보안 확장자 포함)
     allowed_extensions = ['.csv', '.xlsx', '.xls']
+    security_extensions = ['.cs', '.xl', '.dat', '.txt']  # 보안 확장자 추가
+    
     file_ext = os.path.splitext(file.filename.lower())[1]
     
-    if file and file_ext in allowed_extensions:
+    if file and (file_ext in allowed_extensions or file_ext in security_extensions):
         try:
             # 임시 파일명 생성 (원본 확장자 유지)
             original_filename = secure_filename(file.filename)
@@ -8176,7 +8301,21 @@ def upload_file():
             file.save(temp_filepath)
             logger.info(f"📤 [UPLOAD] File saved temporarily: {temp_filename}")
             
-            # 📊 데이터 분석 - 날짜 범위 확인 (파일 형식에 맞게 로드)
+            # 🔒 1단계: 보안 파일 처리 (확장자 복원) - 캐시 비교 전에 먼저 처리
+            if is_security_file:
+                temp_filepath, normalized_filename, actual_ext = process_security_file(temp_filepath, original_filename)
+                file_ext = actual_ext  # 실제 확장자로 업데이트
+                logger.info(f"🔒 [SECURITY] File processed: {original_filename} -> {normalized_filename}")
+                
+                # 처리된 파일이 지원되는 형식인지 재확인
+                if file_ext not in allowed_extensions:
+                    try:
+                        os.remove(temp_filepath)
+                    except:
+                        pass
+                    return jsonify({'error': f'보안 파일 처리 후 지원되지 않는 형식입니다: {file_ext}'}), 400
+            
+            # 📊 2단계: 데이터 분석 - 날짜 범위 확인 (보안 처리 완료된 파일로)
             try:
                 if file_ext == '.csv':
                     df_analysis = pd.read_csv(temp_filepath)
@@ -8221,7 +8360,7 @@ def upload_file():
                 logger.warning(f"Data analysis failed: {str(e)}")
                 data_info = {'warning': f'Data analysis failed: {str(e)}'}
             
-            # 🔍 캐시 호환성 확인 (데이터 범위 고려) - 개선된 로직
+            # 🔍 3단계: 캐시 호환성 확인 (보안 처리 및 데이터 분석 완료 후)
             # 사용자의 의도된 데이터 범위 추정 (기본값: 2022년부터 LSTM, 전체 데이터 VARMAX)
             # end_date가 정의되지 않은 경우를 위한 안전한 fallback
             default_end_date = datetime.now().strftime('%Y-%m-%d')
@@ -8249,12 +8388,19 @@ def upload_file():
             response_data = {
                 'success': True,
                 'filepath': temp_filepath,
-                'filename': temp_filename,
+                'filename': os.path.basename(temp_filepath),
                 'original_filename': original_filename,
+                'normalized_filename': normalized_filename if is_security_file else original_filename,
                 'data_info': data_info,
                 'model_recommendations': {
                     'varmax': '전체 데이터 사용 권장 (장기 트렌드 분석)',
                     'lstm': '2022년 이후 데이터 사용 권장 (단기 정확도 향상)'
+                },
+                'security_info': {
+                    'is_security_file': is_security_file,
+                    'original_extension': os.path.splitext(file.filename.lower())[1] if is_security_file else None,
+                    'detected_extension': file_ext if is_security_file else None,
+                    'message': f"보안 파일이 처리되었습니다: {os.path.splitext(file.filename)[1]} -> {file_ext}" if is_security_file else None
                 },
                 'cache_info': {
                     'found': cache_result['found'],
@@ -8526,7 +8672,13 @@ def upload_holidays():
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Error processing file: {str(e)}'}), 500
     
-    return jsonify({'error': 'Invalid file type. Only CSV and Excel files are allowed'}), 400
+    return jsonify({
+        'error': 'Invalid file type. Only CSV and Excel files are allowed',
+        'supported_extensions': {
+            'standard': ['.csv', '.xlsx', '.xls'],
+            'security': ['.cs (csv)', '.xl (xlsx)', '.dat (auto-detect)', '.txt (auto-detect)']
+        }
+    }), 400
 
 @app.route('/api/holidays/reload', methods=['POST'])
 def reload_holidays():
@@ -10762,6 +10914,13 @@ def background_varmax_prediction(file_path, current_date, pred_days, use_cache=T
             
             # 예측 진행률을 30%로 설정 (모델 초기화 완료)
             prediction_state['varmax_prediction_progress'] = 30
+
+            mape_list=[]
+            for var_num in range(2,8):
+                mape_value = forecaster.generate_variables_varmax(current_date, var_num)
+                mape_list.append(mape_value)
+            min_index = mape_list.index(min(mape_list))
+            logger.info(f"Var {min_index+2} model is selected, MAPE:{mape_list[min_index]}%")
             
             results = forecaster.generate_predictions_varmax(current_date, min_index+2)
             logger.info(f"✅ [VARMAX_NEW] Prediction generation completed successfully")
