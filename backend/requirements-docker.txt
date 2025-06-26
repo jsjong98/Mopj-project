@@ -4,6 +4,7 @@
 flask==2.3.3
 flask-cors==4.0.0
 werkzeug==2.3.7
+gunicorn==21.2.0
 
 # 통계 모델링 (VARMAX 등)
 statsmodels==0.14.0
@@ -15,10 +16,10 @@ optuna==3.3.0
 jupyter==1.0.0
 ipython==8.15.0
 
-# 성능 최적화 (선택사항)
+# 성능 최적화
 numba==0.57.1
 
-# 데이터 검증 및 타입 힌팅 (선택사항)
+# 데이터 검증 및 타입 힌팅
 pydantic==2.3.0
 
 # 로깅 및 모니터링
@@ -28,5 +29,11 @@ colorama==0.4.6
 openpyxl==3.1.2
 xlrd==2.0.1
 
+# 보안 및 환경 관리
+python-dotenv==1.0.0
+
+# API 문서화 (선택사항)
+# flask-restx==1.2.0
+
 # 주의: PyTorch, NumPy, Pandas, Scikit-learn, Matplotlib, Seaborn은 
-# conda로 설치되므로 여기에 포함하지 않음 
+# 별도로 설치되므로 여기에 포함하지 않음 
