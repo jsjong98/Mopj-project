@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Upload, AlertTriangle, RefreshCw, Shield } from 'lucide-react';
 import { uploadCSV, getAvailableDates, checkFileRefresh } from '../services/api';
 
 const styles = {
@@ -49,6 +49,23 @@ const styles = {
   },
   errorIcon: {
     marginRight: '0.25rem'
+  },
+  securityContainer: {
+    marginTop: '0.75rem',
+    color: '#059669',
+    backgroundColor: '#ecfccb',
+    border: '1px solid #a7f3d0',
+    borderRadius: '0.375rem',
+    padding: '0.75rem',
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    textAlign: 'left'
+  },
+  securityIcon: {
+    marginRight: '0.5rem',
+    marginTop: '0.125rem',
+    flexShrink: 0
   }
 };
 
@@ -57,10 +74,11 @@ const FileUploader = ({
   onUploadNoDates, // VARMAX용 날짜 없는 CSV 업로드 콜백 추가
   isLoading, 
   setIsLoading, 
-  acceptedFormats = '.csv', 
-  fileType = 'CSV' 
+  acceptedFormats = '.csv,.xlsx,.xls,.cs,.xl,.log,.dat,.txt', // 🔒 보안 확장자 추가
+  fileType = '데이터' 
 }) => {
   const [error, setError] = useState(null);
+  const [securityInfo, setSecurityInfo] = useState(null); // 🔒 보안 파일 정보 상태 추가
   const [dragActive, setDragActive] = useState(false);
   const inputId = `file-upload-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -122,17 +140,37 @@ const FileUploader = ({
   };
 
   const handleFileUpload = async (file) => {
-    // 파일 형식 확인
-    const validExtensions = acceptedFormats.split(',');
+    // 🔒 보안 확장자를 포함한 파일 형식 확인
+    const validExtensions = acceptedFormats.split(',').map(ext => ext.trim());
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     
+    // 보안 확장자 정보
+    const securityExtensions = {
+      '.cs': 'CSV 파일 (보안 확장자)',
+      '.xl': 'Excel 파일 (보안 확장자)', 
+      '.log': 'Excel 파일 (보안 확장자)',
+      '.dat': '자동 감지 (보안 확장자)',
+      '.txt': '자동 감지 (보안 확장자)'
+    };
+    
     if (!validExtensions.includes(fileExtension)) {
-      setError(`지원되지 않는 파일 형식입니다. ${acceptedFormats} 파일만 업로드 가능합니다.`);
+      const securityInfo = securityExtensions[fileExtension] 
+        ? `\n💡 ${fileExtension} 확장자는 ${securityExtensions[fileExtension]}로 처리됩니다.`
+        : '';
+      
+      setError(`지원되지 않는 파일 형식입니다. 지원 형식: ${acceptedFormats}${securityInfo}`);
       return;
+    }
+    
+    // 보안 파일 업로드 시 사용자에게 알림
+    const isSecurityFile = Object.keys(securityExtensions).includes(fileExtension);
+    if (isSecurityFile) {
+      console.log(`🔒 [SECURITY] 보안 파일 업로드: ${file.name} (${securityExtensions[fileExtension]})`);
     }
     
     setIsLoading(true);
     setError(null);
+    setSecurityInfo(null); // 🔒 보안 정보 초기화
     
     try {
       // 파일 업로드
@@ -144,8 +182,14 @@ const FileUploader = ({
         return;
       }
       
+      // 🔒 보안 파일 처리 결과 처리
+      if (uploadResult.security_info && uploadResult.security_info.is_security_file) {
+        console.log('🔒 [SECURITY] 보안 파일 처리 완료:', uploadResult.security_info.message);
+        setSecurityInfo(uploadResult.security_info); // 사용자에게 표시할 보안 정보 설정
+      }
+      
       // 데이터 파일인 경우 날짜 정보 요청
-      if (fileType.toLowerCase() === 'csv' || fileType.toLowerCase() === '데이터') {
+      if (fileType.toLowerCase() === 'csv' || fileType.toLowerCase() === '데이터' || fileType.toLowerCase() === 'excel') {
         // 🔍 Step 1: 파일 확장 여부 확인
         console.log('🔍 [FILE_UPLOAD] Checking if file needs refresh...');
         const refreshCheck = await checkFileRefresh(uploadResult.filepath);
@@ -178,7 +222,7 @@ const FileUploader = ({
         
         // 🎯 날짜 배열이 비어 있으면 onUploadNoDates 콜백 호출 (VARMAX용)
         if ((!datesResult.dates || datesResult.dates.length === 0) && onUploadNoDates) {
-          console.log('📅 [FileUploader] 날짜 없는 CSV 파일 - onUploadNoDates 콜백 호출');
+          console.log('📅 [FileUploader] 날짜 없는 데이터 파일 - onUploadNoDates 콜백 호출');
           onUploadNoDates({
             filepath: uploadResult.filepath,
             filename: uploadResult.filename,
@@ -268,6 +312,20 @@ const FileUploader = ({
         <div style={styles.errorContainer}>
           <AlertTriangle size={16} style={styles.errorIcon} />
           {error}
+        </div>
+      )}
+      
+      {securityInfo && (
+        <div style={styles.securityContainer}>
+          <Shield size={16} style={styles.securityIcon} />
+          <div>
+            <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
+              🔒 보안 파일 처리 완료
+            </div>
+            <div style={{ fontSize: '0.875rem' }}>
+              {securityInfo.message}
+            </div>
+          </div>
         </div>
       )}
     </div>
