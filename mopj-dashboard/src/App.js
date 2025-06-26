@@ -18,6 +18,7 @@ import ReliabilityAnalysisCard from './components/ReliabilityAnalysisCard';
 import AccumulatedIntervalScoresTable from './components/AccumulatedIntervalScoresTable';
 import HolidayManager from './components/HolidayManager';
 import CalendarDatePicker from './components/CalendarDatePicker'; // 달력 컴포넌트 추가
+import MarketStatus from './components/MarketStatus'; // 최근 시황 컴포넌트 추가
 // VARMAX 관련 컴포넌트 추가
 import VarmaxModelInfo from './components/VarmaxModelInfo';
 import VarmaxResult from './components/VarmaxResult';
@@ -35,6 +36,7 @@ import {
   clearAccumulatedCache,
   getRecentAccumulatedResults,
   getHolidays,
+  reloadHolidays,
   getAttentionMap,
   // VARMAX 관련 함수 추가
   startVarmaxPrediction,
@@ -105,6 +107,34 @@ const isSemimonthlyStart = (dateString) => {
   const day = date.getDate();
   // 1일 또는 16일이면 반월 시작
   return day === 1 || day === 16;
+};
+
+// 날짜가 속한 반월 정보를 반환하는 함수
+const getSemimonthlyPeriod = (dateString) => {
+  const date = new Date(dateString + 'T00:00:00');
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1; // 0-based에서 1-based로 변환
+  const day = date.getDate();
+  
+  // 1-15일은 상반월, 16일-말일은 하반월
+  const isFirstHalf = day <= 15;
+  
+  return {
+    year,
+    month,
+    isFirstHalf,
+    period: `${year}-${month.toString().padStart(2, '0')}-${isFirstHalf ? '1H' : '2H'}` // 예: 2025-04-1H, 2025-04-2H
+  };
+};
+
+// 두 날짜가 같은 반월에 속하는지 확인하는 함수
+const isSameSemimonthlyPeriod = (dateString1, dateString2) => {
+  if (!dateString1 || !dateString2) return false;
+  
+  const period1 = getSemimonthlyPeriod(dateString1);
+  const period2 = getSemimonthlyPeriod(dateString2);
+  
+  return period1.period === period2.period;
 };
 
 // ✅ getNextSemimonthlyStart 함수 제거 (사용되지 않음)
@@ -227,6 +257,7 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isPredicting, setIsPredicting] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState(null); // 남은 시간 정보 포함
   const [error, setError] = useState(null);
   const [currentDate, setCurrentDate] = useState(null);
   const [predictionData, setPredictionData] = useState([]);
@@ -269,6 +300,9 @@ const App = () => {
   
   // 휴일 정보 상태
   const [holidays, setHolidays] = useState([]);
+  
+  // 🔥 급등락 대응 모드 상태
+  const [volatileMode, setVolatileMode] = useState(false);
 
   // VARMAX 관련 상태 추가
   const [varmaxResults, setVarmaxResults] = useState(null);
@@ -324,7 +358,7 @@ const App = () => {
     console.log('ℹ️ [AUTO_RESTORE] Auto-restore feature disabled. Please upload file and run prediction manually.');
   }, []); // 컴포넌트 마운트 시에만 실행
 
-  // 예측 시작일이 변경될 때 필요한 데이터 기준일 계산
+  // 예측 시작일이 변경될 때 필요한 데이터 기준일 계산 및 반월 검증
   useEffect(() => {
     if (selectedStartDate) {
       // 선택된 예측 시작일에 해당하는 필요한 데이터 기준일 찾기
@@ -332,8 +366,14 @@ const App = () => {
       if (selectedPrediction) {
         setRequiredDataDate(selectedPrediction.requiredDataDate);
       }
+      
+      // 🔧 종료일이 시작일과 같은 반월에 속하지 않으면 리셋
+      if (endStartDate && !isSameSemimonthlyPeriod(selectedStartDate, endStartDate)) {
+        console.log(`🔄 [SEMIMONTHLY] 종료일(${endStartDate})이 시작일(${selectedStartDate})과 다른 반월에 속하므로 리셋`);
+        setEndStartDate(selectedStartDate); // 시작일과 같은 날짜로 설정
+      }
     }
-  }, [selectedStartDate, predictableStartDates]);
+  }, [selectedStartDate, predictableStartDates, endStartDate]);
 
   // 누적 예측 날짜가 변경될 때마다 캐시 정보 확인
   useEffect(() => {
@@ -391,6 +431,33 @@ const App = () => {
       lastRequiredData: endPredictableDate.requiredDataDate,
       predictionDates
     };
+  };
+
+  // 휴일 정보 재로드 함수
+  const handleReloadHolidays = async () => {
+    try {
+      // API 호출로 휴일 재로드
+      const reloadResult = await reloadHolidays();
+      if (reloadResult.success) {
+        // 재로드 후 최신 휴일 정보 가져오기
+        const result = await getHolidays();
+        if (result.success && result.holidays) {
+          setHolidays(result.holidays);
+          console.log('🏖️ [HOLIDAYS] Reloaded:', result.holidays.length);
+          console.log('📊 [HOLIDAYS] File holidays:', result.file_holidays);
+          console.log('🔍 [HOLIDAYS] Auto-detected holidays:', result.auto_detected_holidays);
+          
+          // 예측 가능한 날짜 다시 계산 (업데이트된 휴일 반영)
+          if (fileInfo?.dates && fileInfo.dates.length > 0) {
+            const updatedStartDates = generatePredictableStartDates(fileInfo.dates, result.holidays);
+            setPredictableStartDates(updatedStartDates);
+            console.log('🔄 [HOLIDAYS] Updated predictable dates with new holidays:', updatedStartDates.length);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('❌ [HOLIDAYS] Failed to reload holidays:', error);
+    }
   };
 
   // 핸들러 함수
@@ -524,28 +591,7 @@ const App = () => {
     setError(null);
     
     // 🏖️ 파일 업로드 후 휴일 정보 재로드 (데이터 빈 날짜 감지 반영)
-    const reloadHolidays = async () => {
-      try {
-        const result = await getHolidays();
-        if (result.success && result.holidays) {
-          setHolidays(result.holidays);
-          console.log('🏖️ [HOLIDAYS] Reloaded after file upload:', result.holidays.length);
-          console.log('📊 [HOLIDAYS] File holidays:', result.file_holidays);
-          console.log('🔍 [HOLIDAYS] Auto-detected holidays:', result.auto_detected_holidays);
-          
-          // 예측 가능한 날짜 다시 계산 (업데이트된 휴일 반영)
-          if (data.dates && data.dates.length > 0) {
-            const updatedStartDates = generatePredictableStartDates(data.dates, result.holidays);
-            setPredictableStartDates(updatedStartDates);
-            console.log('🔄 [HOLIDAYS] Updated predictable dates with new holidays:', updatedStartDates.length);
-          }
-        }
-      } catch (error) {
-        console.error('❌ [HOLIDAYS] Failed to reload holidays after file upload:', error);
-      }
-    };
-    
-    reloadHolidays();
+    handleReloadHolidays();
   };
 
   // VARMAX 파일 업로드 성공 핸들러 추가
@@ -595,14 +641,15 @@ const App = () => {
     setError(null);
     setIsPredicting(true);
     setProgress(0);
+    setStatus(null);
     setPredictionData([]);
     setIntervalScores([]);
     setMaResults(null);
     setAttentionImage(null);
 
     try {
-      // 백엔드에는 필요한 데이터 기준일을 전달
-      const result = await startPrediction(fileInfo.filepath, requiredDataDate);
+      // 백엔드에는 필요한 데이터 기준일과 급등락 모드를 전달
+      const result = await startPrediction(fileInfo.filepath, requiredDataDate, { volatileMode });
       console.log('✅ [START] Prediction started:', result);
       
       if (result.error) {
@@ -631,6 +678,14 @@ const App = () => {
       return;
     }
 
+    // 🔧 반월 기간 검증
+    if (!isSameSemimonthlyPeriod(selectedStartDate, endStartDate)) {
+      const startPeriod = getSemimonthlyPeriod(selectedStartDate);
+      const endPeriod = getSemimonthlyPeriod(endStartDate);
+      setError(`시작일과 종료일이 다른 반월에 속합니다.\n시작일: ${startPeriod.period}\n종료일: ${endPeriod.period}\n같은 반월 내에서 선택해주세요.`);
+      return;
+    }
+
     // 선택된 예측 시작일들에 해당하는 필요한 데이터 기준일 범위 계산
     const startRequiredDate = predictableStartDates.find(p => p.startDate === selectedStartDate)?.requiredDataDate;
     const endRequiredDate = predictableStartDates.find(p => p.startDate === endStartDate)?.requiredDataDate;
@@ -643,6 +698,7 @@ const App = () => {
     setError(null);
     setIsPredicting(true);
     setProgress(0);
+    setStatus(null);
     
     console.log("Starting accumulated prediction:", {
       filepath: fileInfo.filepath,
@@ -673,6 +729,7 @@ const App = () => {
     setError(null);
     setIsPredicting(true);
     setProgress(0);
+    setStatus(null);
 
     try {
       // 🔧 먼저 현재 VARMAX 상태 확인
@@ -737,19 +794,21 @@ const App = () => {
       console.log(`📊 [CHECK] Status check #${checkCount}`);
       
       try {
-        const status = await getPredictionStatus();
+        const statusData = await getPredictionStatus();
         
-        console.log(`📊 [CHECK] Status received:`, status);
-        setProgress(status.progress || 0);
+        console.log(`📊 [CHECK] Status received:`, statusData);
+        setProgress(statusData.progress || 0);
+        setStatus(statusData); // 전체 상태 정보 저장 (남은 시간 포함)
         
-        if (!status.is_predicting) {
+        if (!statusData.is_predicting) {
           console.log('✅ [CHECK] Prediction completed, stopping interval');
           clearInterval(statusInterval);
           setIsPredicting(false);
+          setStatus(null); // 완료 후 상태 초기화
           
-          if (status.error) {
-            console.error('❌ [CHECK] Prediction error:', status.error);
-            setError(`예측 오류: ${status.error}`);
+          if (statusData.error) {
+            console.error('❌ [CHECK] Prediction error:', statusData.error);
+            setError(`예측 오류: ${statusData.error}`);
           } else {
             console.log(`🎯 [CHECK] Success, fetching results (mode: ${mode})`);
             if (mode === 'accumulated') {
@@ -774,17 +833,19 @@ const App = () => {
   const checkVarmaxStatus = () => {
     const statusInterval = setInterval(async () => {
       try {
-        const status = await getVarmaxStatus();
-        console.log('📊 [VARMAX STATUS]', status);
+        const statusData = await getVarmaxStatus();
+        console.log('📊 [VARMAX STATUS]', statusData);
         
-        setProgress(status.progress);
+        setProgress(statusData.progress);
+        setStatus(statusData); // 전체 상태 정보 저장 (남은 시간 포함)
         
-        if (!status.is_predicting) {
+        if (!statusData.is_predicting) {
           clearInterval(statusInterval);
           setIsPredicting(false);
+          setStatus(null); // 완료 후 상태 초기화
           
-          if (status.error) {
-            setError(`VARMAX 예측 오류: ${status.error}`);
+          if (statusData.error) {
+            setError(`VARMAX 예측 오류: ${statusData.error}`);
           } else {
             // 🎯 단순하게 바로 결과 조회 - 백엔드에서 캐시 fallback 처리됨
             console.log('✅ [VARMAX] Prediction completed, fetching results...');
@@ -2264,6 +2325,13 @@ const App = () => {
               </div>
             </div>
             <div 
+              style={styles.headerTab(systemTab === 'market')}
+              onClick={() => setSystemTab('market')}
+            >
+              <BarChart size={16} />
+              최근 시황
+            </div>
+            <div 
               style={styles.headerTab(systemTab === 'settings')}
               onClick={() => setSystemTab('settings')}
             >
@@ -2644,17 +2712,88 @@ const App = () => {
                   </div>
                 )}
                   
+                  {/* 🔥 급등락 대응 모드 설정 (단일 예측에서만 사용 가능) */}
+                  {activeTab === 'single' && (
+                    <div style={{
+                      margin: '1rem 0',
+                      padding: '1rem',
+                      backgroundColor: volatileMode ? '#fef3c7' : '#f3f4f6',
+                      borderRadius: '0.5rem',
+                      border: `1px solid ${volatileMode ? '#f59e0b' : '#d1d5db'}`
+                    }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                        marginBottom: '0.5rem'
+                      }}>
+                        <input
+                          type="checkbox"
+                          id="volatileMode"
+                          checked={volatileMode}
+                          onChange={(e) => setVolatileMode(e.target.checked)}
+                          style={{
+                            width: '18px',
+                            height: '18px',
+                            cursor: 'pointer'
+                          }}
+                        />
+                        <label 
+                          htmlFor="volatileMode" 
+                          style={{
+                            ...typography.helper,
+                            fontWeight: '600',
+                            color: volatileMode ? '#d97706' : '#374151',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
+                          }}
+                        >
+                          🔥 급등락 대응 모드
+                          {volatileMode && <span style={{ color: '#dc2626' }}>● 활성화</span>}
+                        </label>
+                      </div>
+                      <div style={{
+                        ...typography.small,
+                        color: '#6b7280',
+                        lineHeight: '1.4'
+                      }}>
+                        {volatileMode ? (
+                          <>
+                            <strong style={{ color: '#d97706' }}>⚡ 급등락 상황에 특화된 새로운 하이퍼파라미터를 최적화합니다.</strong><br/>
+                            • 기존 캐시를 무시하고 시장 변동성에 특화된 모델을 학습합니다<br/>
+                            • 예측 정확도 향상을 위해 추가 연산 시간이 소요됩니다 (약 2-3배 소요)<br/>
+                            • 급격한 시장 변화가 예상될 때 사용을 권장합니다<br/>
+                            • <strong>날짜별로 별도 저장되어 덮어쓰기 걱정 없음</strong><br/>
+                            • <strong>일반 모드에서 가장 최신 급등락 하이퍼파라미터 자동 선택</strong>
+                          </>
+                        ) : (
+                          <>
+                            💡 전날 급등락이 있었다고 판단되는 경우 체크하세요.<br/>
+                            일반 모드는 기존 학습된 하이퍼파라미터를 사용하여 빠른 예측을 제공합니다.<br/>
+                            • 급등락 대응 하이퍼파라미터가 있으면 자동으로 우선 사용됩니다
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
                   <div style={styles.buttonRow}>
                     <button
-                      style={styles.predictionButton}
+                      style={{
+                        ...styles.predictionButton,
+                        backgroundColor: volatileMode ? '#f59e0b' : '#10b981',
+                        boxShadow: volatileMode ? '0 2px 4px rgba(245, 158, 11, 0.3)' : '0 1px 2px rgba(0, 0, 0, 0.05)'
+                      }}
                       onClick={handleStartPrediction}
                       disabled={isPredicting || !selectedStartDate}
                     >
-                      <TrendingUp size={18} />
+                      {volatileMode ? '🔥' : <TrendingUp size={18} />}
                       {isPredicting 
-                        ? '예측 중...' 
+                        ? (volatileMode ? '급등락 대응 예측 중...' : '예측 중...') 
                         : selectedStartDate 
-                          ? `${formatDate(selectedStartDate)}부터 예측 시작`
+                          ? (volatileMode ? `급등락 대응 예측 시작` : `${formatDate(selectedStartDate)}부터 예측 시작`)
                           : '날짜 선택 후 예측'
                       }
                     </button>
@@ -2905,16 +3044,21 @@ const App = () => {
                     
                     <div style={styles.selectContainer}>
                       <label style={styles.selectLabel}>
-                        🏁 누적 예측 종료일
+                        🏁 누적 예측 종료일 (같은 반월 내)
                       </label>
                       <div style={styles.calendarWrapper}>
                         <CalendarDatePicker
-                          availableDates={predictableStartDates.filter(item => 
-                            !selectedStartDate || item.startDate >= selectedStartDate
-                          )}
+                          availableDates={predictableStartDates.filter(item => {
+                            // 시작일이 선택되지 않았으면 모든 날짜 허용
+                            if (!selectedStartDate) return true;
+                            
+                            // 시작일보다 이후이면서 같은 반월에 속하는 날짜만 허용
+                            return item.startDate >= selectedStartDate && 
+                                   isSameSemimonthlyPeriod(selectedStartDate, item.startDate);
+                          })}
                           selectedDate={endStartDate}
                           onDateSelect={setEndStartDate}
-                          title="종료일을 선택하세요"
+                          title="종료일을 선택하세요 (같은 반월 내)"
                           holidays={holidays}
                         />
                       </div>
@@ -2924,8 +3068,15 @@ const App = () => {
                   {/* 누적 예측 미리보기 */}
                   {selectedStartDate && endStartDate && (() => {
                     const preview = calculateAccumulatedPreview(selectedStartDate, endStartDate);
+                    const startPeriod = getSemimonthlyPeriod(selectedStartDate);
+                    const isSamePeriod = isSameSemimonthlyPeriod(selectedStartDate, endStartDate);
+                    
                     return preview && (
                       <div style={styles.accumulatedPreview}>
+                        <p style={styles.previewText}>
+                          🗓️ <strong>반월 기간:</strong> {startPeriod.year}년 {startPeriod.month}월 {startPeriod.isFirstHalf ? '상반월 (1-15일)' : '하반월 (16일-말일)'}
+                          {isSamePeriod ? ' ✅' : ' ❌ 다른 반월'}
+                        </p>
                         <p style={styles.previewText}>
                           🔄 <strong>수행할 예측 횟수:</strong> {preview.predictionCount}회
                         </p>
@@ -2950,6 +3101,9 @@ const App = () => {
                         </p>
                         <p style={styles.previewHelpText}>
                           📅 달력에 표시되는 날짜는 실제 예측이 시작되는 날짜입니다.
+                        </p>
+                        <p style={styles.previewHelpText}>
+                          🗓️ <strong>반월 제한:</strong> 시작일과 종료일은 반드시 같은 반월(상반월: 1-15일, 하반월: 16일-말일) 내에서 선택해야 합니다.
                         </p>
                         {holidays.length > 0 && (
                           <p style={styles.previewHelpText}>
@@ -3016,8 +3170,20 @@ const App = () => {
               {/* 진행 상태 표시 */}
               {isPredicting && (
                 <div style={styles.progressContainer}>
-                  <p style={styles.progressText}>예측 진행 상태: {progress}%</p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <p style={styles.progressText}>예측 진행 상태: {progress}%</p>
+                    {status && status.estimated_remaining_text && (
+                      <p style={{ ...styles.progressText, color: '#6b7280', fontSize: '0.875rem' }}>
+                        남은 시간: {status.estimated_remaining_text}
+                      </p>
+                    )}
+                  </div>
                   <ProgressBar progress={progress} />
+                  {status && status.elapsed_time_text && (
+                    <p style={{ ...typography.small, color: '#9ca3af', textAlign: 'center', marginTop: '0.5rem' }}>
+                      경과 시간: {status.elapsed_time_text}
+                    </p>
+                  )}
                 </div>
               )}
               
@@ -3566,6 +3732,28 @@ const App = () => {
               </>
             )}
           </>
+        )}
+
+        {/* 최근 시황 탭 */}
+        {systemTab === 'market' && (
+          <MarketStatus 
+            fileInfo={fileInfo} 
+            windowWidth={windowWidth} 
+          />
+        )}
+
+        {/* 휴일 설정 탭 */}
+        {systemTab === 'settings' && (
+          <div style={styles.card}>
+            <h2 style={styles.cardTitle}>
+              <Calendar size={18} style={styles.iconStyle} />
+              휴일 관리
+            </h2>
+            <HolidayManager 
+              onReload={handleReloadHolidays}
+              holidays={holidays}
+            />
+          </div>
         )}
       </main>
 
