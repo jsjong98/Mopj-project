@@ -121,7 +121,7 @@ const HolidayManager = () => {
               onUploadSuccess={handleUploadSuccess}
               isLoading={isLoading}
               setIsLoading={setIsLoading}
-              acceptedFormats=".csv,.xlsx"
+              acceptedFormats=".csv,.xlsx,.cs,.xl,.log,.dat,.txt"
               fileType="휴일"
             />
           </div>
