@@ -38,6 +38,8 @@ import csv
 from pathlib import Path
 import math
 import logging
+import glob
+import time
 
 # 로깅 설정
 logging.basicConfig(
@@ -70,6 +72,34 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)  # GPU 사용 시
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+
+def set_seed(seed=SEED):
+    """
+    모든 라이브러리의 시드를 고정하여 일관된 예측 결과 보장
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+    # PyTorch의 deterministic 동작 강제
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    # Optuna 시드 설정 (하이퍼파라미터 최적화용)
+    try:
+        import optuna
+        # Optuna 2.x 버전 호환
+        if hasattr(optuna.samplers, 'RandomSampler'):
+            optuna.samplers.RandomSampler(seed=seed)
+        # 레거시 지원
+        if hasattr(optuna.samplers, '_random'):
+            optuna.samplers._random.seed(seed)
+    except Exception as e:
+        logger.debug(f"Optuna 시드 설정 실패: {e}")
+    
+    logger.debug(f"🎯 랜덤 시드 {seed}로 고정됨")
 
 # 디렉토리 설정 - 파일별 캐시 시스템
 UPLOAD_FOLDER = 'uploads'
@@ -183,6 +213,7 @@ prediction_state = {
     'current_file': None,  # 추가: 현재 파일 경로
     'is_predicting': False,  # LSTM 예측 상태
     'prediction_progress': 0,
+    'prediction_start_time': None,  # 예측 시작 시간
     'error': None,
     'selected_features': None,
     'feature_importance': None,
@@ -202,18 +233,88 @@ prediction_state = {
     'varmax_plots': None,
     'varmax_is_predicting': False,  # 🆕 VARMAX 독립 예측 상태
     'varmax_prediction_progress': 0,  # 🆕 VARMAX 독립 진행률
+    'varmax_prediction_start_time': None,  # 🆕 VARMAX 예측 시작 시간
     'varmax_error': None,  # 🆕 VARMAX 독립 에러 상태
 }
 
 # 데이터 로더의 워커 시드 고정을 위한 함수
 def seed_worker(worker_id):
-    worker_seed = SEED
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
+    """DataLoader worker 시드 고정"""
+    # 기존 시드 고정 방식 유지하되 강화
+    set_seed(SEED)
 
 # 데이터 로더의 생성자 시드 고정
 g = torch.Generator()
 g.manual_seed(SEED)
+
+def calculate_estimated_time_remaining(start_time, current_progress):
+    """
+    예측 시작 시간과 현재 진행률을 기반으로 남은 시간을 계산합니다.
+    
+    Args:
+        start_time: 예측 시작 시간 (time.time() 값)
+        current_progress: 현재 진행률 (0-100)
+    
+    Returns:
+        dict: {
+            'estimated_remaining_seconds': int,
+            'estimated_remaining_text': str,
+            'elapsed_time_seconds': int,
+            'elapsed_time_text': str
+        }
+    """
+    if not start_time or current_progress <= 0:
+        return {
+            'estimated_remaining_seconds': None,
+            'estimated_remaining_text': '계산 중...',
+            'elapsed_time_seconds': 0,
+            'elapsed_time_text': '0초'
+        }
+    
+    current_time = time.time()
+    elapsed_time = current_time - start_time
+    
+    # 진행률이 100% 이상이면 완료
+    if current_progress >= 100:
+        return {
+            'estimated_remaining_seconds': 0,
+            'estimated_remaining_text': '완료',
+            'elapsed_time_seconds': int(elapsed_time),
+            'elapsed_time_text': format_time_duration(int(elapsed_time))
+        }
+    
+    # 진행률을 기반으로 총 예상 시간 계산
+    estimated_total_time = elapsed_time * (100 / current_progress)
+    estimated_remaining_time = estimated_total_time - elapsed_time
+    
+    # 음수가 되지 않도록 보정
+    estimated_remaining_time = max(0, estimated_remaining_time)
+    
+    return {
+        'estimated_remaining_seconds': int(estimated_remaining_time),
+        'estimated_remaining_text': format_time_duration(int(estimated_remaining_time)),
+        'elapsed_time_seconds': int(elapsed_time),
+        'elapsed_time_text': format_time_duration(int(elapsed_time))
+    }
+
+def format_time_duration(seconds):
+    """시간을 사람이 읽기 쉬운 형태로 포맷팅"""
+    if seconds < 60:
+        return f"{seconds}초"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        remaining_seconds = seconds % 60
+        if remaining_seconds > 0:
+            return f"{minutes}분 {remaining_seconds}초"
+        else:
+            return f"{minutes}분"
+    else:
+        hours = seconds // 3600
+        remaining_minutes = (seconds % 3600) // 60
+        if remaining_minutes > 0:
+            return f"{hours}시간 {remaining_minutes}분"
+        else:
+            return f"{hours}시간"
 
 #######################################################################
 # 모델 및 유틸리티 함수
@@ -263,22 +364,142 @@ def calculate_file_hash(file_path, chunk_size=8192):
         logger.error(f"File hash calculation failed: {str(e)}")
         return None
 
+# 파일 해시 캐시 추가 (메모리 캐싱으로 성능 최적화)
+_file_hash_cache = {}
+_cache_lookup_index = {}  # 빠른 캐시 검색을 위한 인덱스
+
 def get_data_content_hash(file_path):
-    """CSV 파일의 데이터 내용만으로 해시 생성 (날짜 순서 기준)"""
+    """데이터 파일(CSV/Excel)의 전처리된 내용으로 해시 생성 (캐싱 최적화)"""
     import hashlib
+    import os
     
     try:
-        df = pd.read_csv(file_path)
+        # 파일 수정 시간 기반 캐시 확인
+        if file_path in _file_hash_cache:
+            cached_mtime, cached_hash = _file_hash_cache[file_path]
+            current_mtime = os.path.getmtime(file_path)
+            
+            # 파일이 수정되지 않았다면 캐시된 해시 반환
+            if abs(current_mtime - cached_mtime) < 1.0:  # 1초 이내 차이는 무시
+                logger.debug(f"📋 Using cached hash for {os.path.basename(file_path)}")
+                return cached_hash
+        
+        # 파일이 수정되었거나 캐시가 없는 경우 새로 계산
+        logger.info(f"🔄 Calculating new hash for {os.path.basename(file_path)}")
+        
+        # 파일 형식에 맞게 로드
+        file_ext = os.path.splitext(file_path.lower())[1]
+        if file_ext == '.csv':
+            df = pd.read_csv(file_path)
+        else:
+            # Excel 파일인 경우 load_data 함수 사용 (전처리된 데이터로 해시 생성)
+            df = load_data(file_path)
+            # 인덱스가 Date인 경우 컬럼으로 복원
+            if df.index.name == 'Date':
+                df = df.reset_index()
+        
         if 'Date' in df.columns:
             # 날짜를 기준으로 정렬하여 일관된 해시 생성
             df = df.sort_values('Date')
         
-        # 데이터프레임의 내용을 문자열로 변환하여 해시 계산
-        content_str = df.to_string()
-        return hashlib.sha256(content_str.encode()).hexdigest()[:16]  # 짧은 해시 사용
+        # 🔧 DataFrame을 안전하게 문자열로 변환
+        # 무한대나 NaN 값을 처리하여 해시 계산 오류 방지
+        df_for_hash = df.copy()
+        
+        # 무한대와 NaN 값을 문자열로 변환
+        df_for_hash = df_for_hash.replace([np.inf, -np.inf], 'inf')
+        df_for_hash = df_for_hash.fillna('nan')
+        
+        # 모든 컬럼을 문자열로 변환하여 안전한 해시 계산
+        try:
+            content_str = df_for_hash.to_string()
+        except Exception as str_error:
+            logger.warning(f"DataFrame to_string failed, using alternative method: {str(str_error)}")
+            # 대안: 각 컬럼을 개별적으로 문자열로 변환
+            content_parts = []
+            for col in df_for_hash.columns:
+                try:
+                    col_str = str(col) + ":" + str(df_for_hash[col].tolist())
+                    content_parts.append(col_str)
+                except Exception:
+                    content_parts.append(f"{col}:error")
+            content_str = "|".join(content_parts)
+        
+        file_hash = hashlib.sha256(content_str.encode('utf-8', errors='ignore')).hexdigest()[:16]  # 짧은 해시 사용
+        
+        # 캐시 저장
+        _file_hash_cache[file_path] = (os.path.getmtime(file_path), file_hash)
+        
+        return file_hash
     except Exception as e:
         logger.error(f"Data content hash calculation failed: {str(e)}")
-        return None
+        # 해시 계산에 실패하면 파일 기본 해시를 사용
+        try:
+            return calculate_file_hash(file_path)[:16]
+        except Exception:
+            return None
+
+def build_cache_lookup_index():
+    """캐시 디렉토리의 인덱스를 빌드하여 빠른 검색 가능"""
+    global _cache_lookup_index
+    
+    try:
+        _cache_lookup_index = {}
+        cache_root = Path(CACHE_ROOT_DIR)
+        
+        if not cache_root.exists():
+            return
+        
+        for file_dir in cache_root.iterdir():
+            if not file_dir.is_dir() or file_dir.name == "default":
+                continue
+            
+            predictions_dir = file_dir / 'predictions'
+            if not predictions_dir.exists():
+                continue
+            
+            prediction_files = list(predictions_dir.glob("prediction_start_*_meta.json"))
+            
+            for meta_file in prediction_files:
+                try:
+                    with open(meta_file, 'r', encoding='utf-8') as f:
+                        meta_data = json.load(f)
+                    
+                    file_hash = meta_data.get('file_content_hash')
+                    data_end_date = meta_data.get('data_end_date')
+                    
+                    if file_hash and data_end_date:
+                        semimonthly = get_semimonthly_period(pd.to_datetime(data_end_date))
+                        cache_key = f"{file_hash}_{semimonthly}"
+                        
+                        _cache_lookup_index[cache_key] = {
+                            'meta_file': str(meta_file),
+                            'predictions_dir': str(predictions_dir),
+                            'data_end_date': data_end_date,
+                            'semimonthly': semimonthly
+                        }
+                        
+                except Exception:
+                    continue
+                    
+        logger.info(f"📊 Built cache lookup index with {len(_cache_lookup_index)} entries")
+        
+    except Exception as e:
+        logger.error(f"Failed to build cache lookup index: {str(e)}")
+        _cache_lookup_index = {}
+
+def refresh_cache_index():
+    """캐시 인덱스를 새로고침 (새로운 캐시 파일이 생성된 후 호출)"""
+    global _cache_lookup_index
+    logger.info("🔄 Refreshing cache lookup index...")
+    build_cache_lookup_index()
+
+def clear_cache_memory():
+    """메모리 캐시를 클리어 (메모리 절약용)"""
+    global _file_hash_cache, _cache_lookup_index
+    _file_hash_cache.clear()
+    _cache_lookup_index.clear()
+    logger.info("🧹 Cleared memory cache")
 
 def check_data_extension(old_file_path, new_file_path):
     """
@@ -303,8 +524,21 @@ def check_data_extension(old_file_path, new_file_path):
     }
     """
     try:
-        old_df = pd.read_csv(old_file_path)
-        new_df = pd.read_csv(new_file_path)
+        # 파일 형식에 맞게 로드
+        def load_file_safely(filepath):
+            file_ext = os.path.splitext(filepath.lower())[1]
+            if file_ext == '.csv':
+                return pd.read_csv(filepath)
+            else:
+                # Excel 파일인 경우 load_data 함수 사용
+                df = load_data(filepath)
+                # 인덱스가 Date인 경우 컬럼으로 복원
+                if df.index.name == 'Date':
+                    df = df.reset_index()
+                return df
+        
+        old_df = load_file_safely(old_file_path)
+        new_df = load_file_safely(new_file_path)
         
         # 날짜 컬럼이 있는지 확인
         if 'Date' not in old_df.columns or 'Date' not in new_df.columns:
@@ -573,8 +807,17 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
     }
     """
     try:
-        # 새 파일의 데이터 분석
-        new_df = pd.read_csv(new_file_path)
+        # 새 파일의 데이터 분석 (파일 형식에 맞게)
+        file_ext = os.path.splitext(new_file_path.lower())[1]
+        if file_ext == '.csv':
+            new_df = pd.read_csv(new_file_path)
+        else:
+            # Excel 파일인 경우 load_data 함수 사용
+            new_df = load_data(new_file_path)
+            # 인덱스가 Date인 경우 컬럼으로 복원
+            if new_df.index.name == 'Date':
+                new_df = new_df.reset_index()
+        
         if 'Date' not in new_df.columns:
             return {'found': False, 'cache_type': None, 'reason': 'No Date column'}
             
@@ -602,7 +845,7 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
         
         # 1. uploads 폴더의 파일들 검사 (데이터 범위 고려)
         upload_dir = Path(UPLOAD_FOLDER)
-        existing_files = list(upload_dir.glob('*.csv'))
+        existing_files = list(upload_dir.glob('*.csv')) + list(upload_dir.glob('*.xlsx')) + list(upload_dir.glob('*.xls'))
         
         logger.info(f"🔍 [ENHANCED_CACHE] Checking {len(existing_files)} upload files with range consideration...")
         
@@ -770,6 +1013,529 @@ def find_compatible_cache_file(new_file_path, intended_data_range=None):
         logger.error(f"Enhanced cache compatibility check failed: {str(e)}")
         return {'found': False, 'cache_type': None, 'error': str(e)}
 
+def create_proper_column_names(file_path, sheet_name):
+    """헤더 3행을 읽어서 적절한 열 이름 생성"""
+    # 헤더 3행을 읽어옴
+    header_rows = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=3)
+    
+    # 각 열별로 적절한 이름 생성
+    column_names = []
+    prev_main_category = None  # 이전 메인 카테고리 저장
+    
+    for col_idx in range(header_rows.shape[1]):
+        values = [str(header_rows.iloc[i, col_idx]).strip() 
+                 for i in range(3) 
+                 if pd.notna(header_rows.iloc[i, col_idx]) and str(header_rows.iloc[i, col_idx]).strip() != 'nan']
+        
+        # 첫 번째 행의 값이 있으면 메인 카테고리로 저장
+        if pd.notna(header_rows.iloc[0, col_idx]) and str(header_rows.iloc[0, col_idx]).strip() != 'nan':
+            prev_main_category = str(header_rows.iloc[0, col_idx]).strip()
+        
+        # 열 이름 생성 로직
+        if 'Date' in values:
+            column_names.append('Date')
+        else:
+            # 값이 하나도 없는 경우
+            if not values:
+                column_names.append(f'Unnamed_{col_idx}')
+                continue
+                
+            # 메인 카테고리가 있고, 현재 값들에 포함되지 않은 경우 추가
+            if prev_main_category and prev_main_category not in values:
+                values.insert(0, prev_main_category)
+            
+            # 특수 케이스 처리 (예: WS, Naphtha 등)
+            if 'WS' in values and 'SG-Korea' in values:
+                column_names.append('WS_SG-Korea')
+            elif 'Naphtha' in values and 'Platts' in values:
+                column_names.append('Naphtha_Platts_' + '_'.join([v for v in values if v not in ['Naphtha', 'Platts']]))
+            else:
+                column_names.append('_'.join(values))
+    
+    return column_names
+
+def remove_high_missing_columns(data, threshold=70):
+    """높은 결측치 비율을 가진 열 제거"""
+    missing_ratio = (data.isnull().sum() / len(data)) * 100
+    high_missing_cols = missing_ratio[missing_ratio >= threshold].index
+    
+    print(f"\n=== {threshold}% 이상 결측치가 있어 제거될 열 목록 ===")
+    for col in high_missing_cols:
+        print(f"- {col}: {missing_ratio[col]:.1f}%")
+    
+    cleaned_data = data.drop(columns=high_missing_cols)
+    print(f"\n원본 데이터 형태: {data.shape}")
+    print(f"정제된 데이터 형태: {cleaned_data.shape}")
+    
+    return cleaned_data
+
+def clean_text_values_advanced(data):
+    """고급 텍스트 값 정제 (쉼표 소수점 처리 포함)"""
+    cleaned_data = data.copy()
+    
+    def fix_comma_decimal(value_str):
+        """쉼표로 된 소수점을 점으로 변경하는 함수"""
+        if not isinstance(value_str, str) or ',' not in value_str:
+            return value_str
+            
+        import re
+        
+        # 패턴 1: 단순 소수점 쉼표 (예: "123,45")
+        if re.match(r'^-?\d+,\d{1,3}$', value_str):
+            return value_str.replace(',', '.')
+            
+        # 패턴 2: 천 단위 구분자 + 소수점 쉼표 (예: "1.234,56")
+        if re.match(r'^-?\d{1,3}(\.\d{3})*,\d{1,3}$', value_str):
+            # 마지막 쉼표만 소수점으로 변경
+            last_comma_pos = value_str.rfind(',')
+            return value_str[:last_comma_pos] + '.' + value_str[last_comma_pos+1:]
+            
+        # 패턴 3: 쉼표만 천 단위 구분자로 사용 (예: "1,234,567")
+        if re.match(r'^-?\d{1,3}(,\d{3})+$', value_str):
+            return value_str.replace(',', '')
+            
+        return value_str
+    
+    def process_value(x):
+        if pd.isna(x):  # 이미 NaN인 경우
+            return x
+        
+        # 문자열로 변환하여 처리
+        x_str = str(x).strip()
+        
+        # 1. 먼저 쉼표 소수점 문제 해결
+        x_str = fix_comma_decimal(x_str)
+        
+        # 2. 휴일/미발표 데이터 처리
+        if x_str.upper() in ['NOP', 'NO PUBLICATION', 'NO PUB']:
+            return np.nan
+            
+        # 3. '*' 포함된 계산식 처리
+        if '*' in x_str:
+            try:
+                # 계산식 실행
+                return float(eval(x_str.replace(' ', '')))
+            except:
+                return x
+        
+        # 4. 숫자로 변환 시도
+        try:
+            return float(x_str)
+        except:
+            return x
+
+    # 쉼표 처리 통계를 위한 변수
+    comma_fixes = 0
+    
+    # 각 열에 대해 처리
+    for column in cleaned_data.columns:
+        if column != 'Date':  # Date 열 제외
+            # 처리 전 쉼표가 있는 값들 확인
+            before_comma_count = cleaned_data[column].astype(str).str.contains(',', na=False).sum()
+            
+            cleaned_data[column] = cleaned_data[column].apply(process_value)
+            
+            # 처리 후 쉼표가 있는 값들 확인
+            after_comma_count = cleaned_data[column].astype(str).str.contains(',', na=False).sum()
+            
+            if before_comma_count > after_comma_count:
+                fixed_count = before_comma_count - after_comma_count
+                comma_fixes += fixed_count
+                print(f"열 '{column}': {fixed_count}개의 쉼표 소수점을 수정했습니다.")
+    
+    if comma_fixes > 0:
+        print(f"\n총 {comma_fixes}개의 쉼표 소수점을 점으로 수정했습니다.")
+    
+    # MOPJ 변수 처리 (결측치가 있는 행 제거)
+    mopj_columns = [col for col in cleaned_data.columns if 'MOPJ' in col or 'Naphtha_Platts_MOPJ' in col]
+    if mopj_columns:
+        mopj_col = mopj_columns[0]  # 첫 번째 MOPJ 관련 열 사용
+        print(f"\n=== {mopj_col} 변수 처리 전 데이터 크기 ===")
+        print(f"행 수: {len(cleaned_data)}")
+        
+        # 결측치가 있는 행 제거
+        cleaned_data = cleaned_data.dropna(subset=[mopj_col])
+        
+        # 문자열 값이 있는 행 제거
+        try:
+            pd.to_numeric(cleaned_data[mopj_col], errors='raise')
+        except:
+            # 숫자로 변환할 수 없는 행 찾기
+            numeric_mask = pd.to_numeric(cleaned_data[mopj_col], errors='coerce').notna()
+            cleaned_data = cleaned_data[numeric_mask]
+        
+        print(f"\n=== {mopj_col} 변수 처리 후 데이터 크기 ===")
+        print(f"행 수: {len(cleaned_data)}")
+    
+    return cleaned_data
+
+def fill_missing_values_advanced(data):
+    """고급 결측치 채우기 (forward fill + backward fill)"""
+    filled_data = data.copy()
+    
+    # Date 열 제외한 모든 수치형 열에 대해
+    numeric_cols = filled_data.select_dtypes(include=[np.number]).columns
+    
+    # 이전 값으로 결측치 채우기 (forward fill)
+    filled_data[numeric_cols] = filled_data[numeric_cols].ffill()
+    
+    # 남은 결측치가 있는 경우 다음 값으로 채우기 (backward fill)
+    filled_data[numeric_cols] = filled_data[numeric_cols].bfill()
+    
+    return filled_data
+
+def rename_columns_to_standard(data):
+    """열 이름을 표준 형태로 변경"""
+    column_mapping = {
+        'Date': 'Date',
+        'Crude Oil_WTI': 'WTI',
+        'Crude Oil_Brent': 'Brent',
+        'Crude Oil_Dubai': 'Dubai',
+        'WS_AG-SG_55': 'WS_55',
+        'WS_75.0': 'WS_75',
+        'Naphtha_Platts_MOPJ': 'MOPJ',
+        'Naphtha_MOPAG': 'MOPAG',
+        'Naphtha_MOPS': 'MOPS',
+        'Naphtha_Monthly Spread': 'Monthly Spread',
+        'LPG_Argus FEI_C3': 'C3_LPG',
+        'LPG_C4': 'C4_LPG',
+        'Gasoline_FOB SP_92RON': 'Gasoline_92RON',
+        'Gasoline_95RON': 'Gasoline_95RON',
+        'Ethylene_Platts_CFR NEA': 'EL_CRF NEA',
+        'Ethylene_CFR SEA': 'EL_CRF SEA',
+        'Propylene_Platts_FOB Korea': 'PL_FOB Korea',
+        'Benzene_Platts_FOB Korea': 'BZ_FOB Korea',
+        'Benzene_Platts_FOB SEA': 'BZ_FOB SEA',
+        'Benzene_Platts_FOB US M1': 'BZ_FOB US M1',
+        'Benzene_Platts_FOB US M2': 'BZ_FOB US M2',
+        'Benzene_Platts_H2-TIME SPREAD': 'BZ_H2-TIME SPREAD',
+        'Toluene_Platts_FOB Korea': 'TL_FOB Korea',
+        'Toluene_Platts_FOB US M1': 'TL_FOB US M1',
+        'Toluene_Platts_FOB US M2': 'TL_FOB US M2',
+        'MX_Platts FE_FOB K': 'MX_FOB Korea',
+        'PX_FOB   Korea': 'PX_FOB Korea',
+        'SM_FOB   Korea': 'SM_FOB Korea',
+        'RPG Value_Calculated_FOB PG': 'RPG Value_FOB PG',
+        'FO_Platts_HSFO 180 CST': 'FO_HSFO 180 CST',
+        'MTBE_Platts_FOB S\'pore': 'MTBE_FOB Singapore',
+        'MTBE_Dow_Jones': 'Dow_Jones',
+        'MTBE_Euro': 'Euro',
+        'MTBE_Gold': 'Gold',
+        'PP (ICIS)_CIF NWE': 'Europe_CIF NWE',
+        'PP (ICIS)_M.G.\n10ppm': 'Europe_M.G_10ppm',
+        'PP (ICIS)_RBOB (NYMEX)_M1': 'RBOB (NYMEX)_M1',
+        'Brent_WTI': 'Brent_WTI',
+        'MOPJ_Mopag_Nap': 'MOPJ_MOPAG',
+        'MOPJ_MOPS_Nap': 'MOPJ_MOPS',
+        'Naphtha_Spread': 'Naphtha_Spread',
+        'MG92_E Nap': 'MG92_E Nap',
+        'C3_MOPJ': 'C3_MOPJ',
+        'C4_MOPJ': 'C4_MOPJ',
+        'Nap_Dubai': 'Nap_Dubai',
+        'MG92_Nap_mops': 'MG92_Nap_MOPS',
+        '95R_92R_Asia': '95R_92R_Asia',
+        'M1_M2_RBOB': 'M1_M2_RBOB',
+        'RBOB_Brent_m1': 'RBOB_Brent_m1',
+        'RBOB_Brent_m2': 'RBOB_Brent_m2',
+        'EL': 'EL_MOPJ',
+        'PL': 'PL_MOPJ',
+        'BZ_MOPJ': 'BZ_MOPJ',
+        'TL': 'TL_MOPJ',
+        'PX': 'PX_MOPJ',
+        'HD': 'HD_EL',
+        'LD_EL': 'LD_EL',
+        'LLD': 'LLD_EL',
+        'PP_PL': 'PP_PL',
+        'SM_EL+BZ_Margin': 'SM_EL+BZ',
+        'US_FOBK_BZ': 'US_FOBK_BZ',
+        'NAP_HSFO_180': 'NAP_HSFO_180',
+        'MTBE_MOPJ': 'MTBE_MOPJ',
+        'MTBE_PG': 'Freight_55_PG',
+        'MTBE_Maili': 'Freight_55_Maili',
+        'Freight (55)_Ruwais_Yosu': 'Freight_55_Yosu',
+        'Freight (55)_Daes\'': 'Freight_55_Daes',
+        'Freight (55)_Chiba': 'Freight_55_Chiba',
+        'Freight (55)_PG': 'Freight_75_PG',
+        'Freight (55)_Maili': 'Freight_75_Maili',
+        'Freight (75)_Ruwais_Yosu': 'Freight_75_Yosu',
+        'Freight (75)_Daes\'': 'Freight_75_Daes',
+        'Freight (75)_Chiba': 'Freight_75_Chiba',
+        'Freight (75)_PG': 'Flat Rate_PG',
+        'Freight (75)_Maili': 'Flat Rate_Maili',
+        'Flat Rate_Ruwais_Yosu': 'Flat Rate_Yosu',
+        'Flat Rate_Daes\'': 'Flat Rate_Daes',
+        'Flat Rate_Chiba': 'Flat Rate_Chiba'
+    }
+    
+    # 실제 존재하는 열만 매핑
+    existing_columns = data.columns.tolist()
+    final_mapping = {}
+    
+    for old_name, new_name in column_mapping.items():
+        if old_name in existing_columns:
+            final_mapping[old_name] = new_name
+    
+    # 매핑되지 않은 열들 확인
+    unmapped_columns = [col for col in existing_columns if col not in column_mapping.keys()]
+    if unmapped_columns:
+        print(f"\n=== 매핑되지 않은 열들 ===")
+        for col in unmapped_columns:
+            print(f"- {col}")
+    
+    # 열 이름 변경
+    renamed_data = data.rename(columns=final_mapping)
+    
+    print(f"\n=== 열 이름 변경 완료 ===")
+    print(f"변경된 열 개수: {len(final_mapping)}")
+    print(f"최종 데이터 형태: {renamed_data.shape}")
+    
+    return renamed_data
+
+# process_data_250620.py의 추가 함수들
+def remove_missing_and_analyze(data, threshold=10):
+    """
+    중간 수준의 결측치 비율을 가진 열을 제거하고 분석하는 함수
+    (process_data_250620.py에서 가져온 함수)
+    """
+    # 결측치 비율 계산
+    missing_ratio = (data.isnull().sum() / len(data)) * 100
+    
+    # threshold% 이상 결측치가 있는 열 식별
+    high_missing_cols = missing_ratio[missing_ratio >= threshold]
+    
+    if len(high_missing_cols) > 0:
+        logger.info(f"\n=== {threshold}% 이상 결측치가 있어 제거될 열 목록 ===")
+        for col, ratio in high_missing_cols.items():
+            logger.info(f"- {col}: {ratio:.1f}%")
+        
+        # 결측치가 threshold% 이상인 열 제거
+        cleaned_data = data.drop(columns=high_missing_cols.index)
+        logger.info(f"\n원본 데이터 형태: {data.shape}")
+        logger.info(f"정제된 데이터 형태: {cleaned_data.shape}")
+    else:
+        cleaned_data = data
+        logger.info(f"\n제거할 {threshold}% 이상 결측치 열 없음: {data.shape}")
+    
+    return cleaned_data
+
+def find_text_missings(data, text_patterns=['NOP', 'No Publication']):
+    """
+    문자열 형태의 결측치를 찾는 함수
+    (process_data_250620.py에서 가져온 함수)
+    """
+    logger.info("\n=== 문자열 형태의 결측치 분석 ===")
+    
+    # 각 패턴별로 검사
+    for pattern in text_patterns:
+        logger.info(f"\n['{pattern}' 포함된 데이터 확인]")
+        
+        # 모든 열에 대해 검사
+        for column in data.columns:
+            # 문자열 데이터만 검사
+            if data[column].dtype == 'object':
+                # 해당 패턴이 포함된 데이터 찾기
+                mask = data[column].astype(str).str.contains(pattern, na=False, case=False)
+                matches = data[mask]
+                
+                if len(matches) > 0:
+                    logger.info(f"\n열: {column}")
+                    logger.info(f"발견된 횟수: {len(matches)}")
+
+def final_clean_data_improved(data):
+    """
+    최종 데이터 정제 함수 (process_data_250620.py에서 가져온 함수)
+    M1_M2_RBOB 컬럼의 결측치나 'Q' 값을 RBOB_Brent_m1 - RBOB_Brent_m2로 계산해서 채움
+    """
+    # 데이터 복사본 생성
+    cleaned_data = data.copy()
+    
+    # MTBE_Dow_Jones 열 특별 처리
+    for col in ['MTBE_Dow_Jones']:
+        if col in cleaned_data.columns:
+            # 숫자로 변환 시도
+            cleaned_data[col] = pd.to_numeric(cleaned_data[col], errors='coerce')
+    
+    # 🔧 M1_M2_RBOB 열 특별 처리: 결측치와 'Q' 값을 계산으로 채우기
+    if 'M1_M2_RBOB' in cleaned_data.columns and 'RBOB_Brent_m1' in cleaned_data.columns and 'RBOB_Brent_m2' in cleaned_data.columns:
+        logger.info(f"\n=== M1_M2_RBOB 열 처리 시작 ===")
+        logger.info(f"처리 전 데이터 타입: {cleaned_data['M1_M2_RBOB'].dtype}")
+        logger.info(f"처리 전 결측치 개수: {cleaned_data['M1_M2_RBOB'].isnull().sum()}")
+        
+        # 'Q' 값들과 기타 문자열 값들을 NaN으로 변환
+        original_values = cleaned_data['M1_M2_RBOB'].copy()
+        q_count = 0
+        other_string_count = 0
+        
+        # 'Q' 값 개수 확인
+        if cleaned_data['M1_M2_RBOB'].dtype == 'object':
+            q_mask = cleaned_data['M1_M2_RBOB'].astype(str).str.upper() == 'Q'
+            q_count = q_mask.sum()
+            
+            # 기타 문자열 값들 확인
+            numeric_convertible = pd.to_numeric(cleaned_data['M1_M2_RBOB'], errors='coerce')
+            string_mask = pd.isna(numeric_convertible) & cleaned_data['M1_M2_RBOB'].notna()
+            other_string_count = string_mask.sum() - q_count
+            
+            if q_count > 0:
+                logger.info(f"'Q' 값 {q_count}개 발견")
+            if other_string_count > 0:
+                logger.info(f"기타 문자열 값 {other_string_count}개 발견")
+        
+        # 'Q' 값들과 기타 문자열을 NaN으로 변환
+        cleaned_data['M1_M2_RBOB'] = cleaned_data['M1_M2_RBOB'].replace('Q', np.nan)
+        cleaned_data['M1_M2_RBOB'] = cleaned_data['M1_M2_RBOB'].replace('q', np.nan)
+        
+        # 문자열로 저장된 숫자들을 실제 숫자로 변환
+        cleaned_data['M1_M2_RBOB'] = pd.to_numeric(cleaned_data['M1_M2_RBOB'], errors='coerce')
+        
+        # 결측치와 'Q' 값들을 계산으로 채우기: M1_M2_RBOB = RBOB_Brent_m1 - RBOB_Brent_m2
+        missing_mask = cleaned_data['M1_M2_RBOB'].isnull()
+        missing_count_before = missing_mask.sum()
+        
+        if missing_count_before > 0:
+            logger.info(f"결측치 {missing_count_before}개를 계산으로 채웁니다: M1_M2_RBOB = RBOB_Brent_m1 - RBOB_Brent_m2")
+            
+            # 계산 가능한 행들만 선택 (m1, m2 둘 다 유효한 값이 있는 경우)
+            can_calculate = (missing_mask & 
+                           cleaned_data['RBOB_Brent_m1'].notna() & 
+                           cleaned_data['RBOB_Brent_m2'].notna())
+            calculated_count = can_calculate.sum()
+            
+            if calculated_count > 0:
+                # 계산 수행
+                calculated_values = (cleaned_data.loc[can_calculate, 'RBOB_Brent_m1'] - 
+                                   cleaned_data.loc[can_calculate, 'RBOB_Brent_m2'])
+                
+                cleaned_data.loc[can_calculate, 'M1_M2_RBOB'] = calculated_values
+                logger.info(f"실제로 계산된 값: {calculated_count}개")
+                
+                # 계산 검증 (처음 5개 값 출력)
+                logger.info(f"=== 계산 검증 (처음 5개 계산된 값) ===")
+                calculated_rows = cleaned_data[can_calculate].head(5)
+                for idx, row in calculated_rows.iterrows():
+                    m1_val = row['RBOB_Brent_m1']
+                    m2_val = row['RBOB_Brent_m2']
+                    calculated_val = row['M1_M2_RBOB']
+                    logger.info(f"인덱스 {idx}: {m1_val:.6f} - {m2_val:.6f} = {calculated_val:.6f}")
+                    
+            else:
+                logger.warning("계산 가능한 행이 없습니다 (RBOB_Brent_m1 또는 RBOB_Brent_m2에 결측치가 있음)")
+        
+        # 처리 후 결과 확인
+        missing_count_after = cleaned_data['M1_M2_RBOB'].isnull().sum()
+        valid_count = cleaned_data['M1_M2_RBOB'].notna().sum()
+        
+        logger.info(f"\n=== M1_M2_RBOB 열 처리 후 ===")
+        logger.info(f"데이터 타입: {cleaned_data['M1_M2_RBOB'].dtype}")
+        logger.info(f"결측치 개수: {missing_count_after}")
+        logger.info(f"유효 데이터 개수: {valid_count}")
+        logger.info(f"처리된 결측치 개수: {missing_count_before - missing_count_after}")
+        
+        if valid_count > 0:
+            logger.info(f"최소값: {cleaned_data['M1_M2_RBOB'].min():.6f}")
+            logger.info(f"최대값: {cleaned_data['M1_M2_RBOB'].max():.6f}")
+            logger.info(f"평균값: {cleaned_data['M1_M2_RBOB'].mean():.6f}")
+    
+    else:
+        # 필요한 컬럼이 없는 경우
+        missing_cols = []
+        for col in ['M1_M2_RBOB', 'RBOB_Brent_m1', 'RBOB_Brent_m2']:
+            if col not in cleaned_data.columns:
+                missing_cols.append(col)
+        
+        if missing_cols:
+            logger.warning(f"M1_M2_RBOB 계산에 필요한 컬럼이 없습니다: {missing_cols}")
+    
+    return cleaned_data
+
+def clean_and_trim_data(data, start_date='2013-02-06'):
+    """
+    데이터 정제 및 날짜 범위 조정 함수
+    (process_data_250620.py에서 가져온 함수)
+    """
+    # 시작 날짜 이후의 데이터만 선택
+    cleaned_data = data[data['Date'] >= pd.to_datetime(start_date)].copy()
+    
+    # 기본 정보 출력
+    logger.info(f"=== 데이터 처리 결과 ===")
+    logger.info(f"원본 데이터 기간: {data['Date'].min()} ~ {data['Date'].max()}")
+    logger.info(f"처리된 데이터 기간: {cleaned_data['Date'].min()} ~ {cleaned_data['Date'].max()}")
+    logger.info(f"원본 데이터 행 수: {len(data)}")
+    logger.info(f"처리된 데이터 행 수: {len(cleaned_data)}")
+    
+    return cleaned_data
+
+def load_and_process_data_improved(file_path, sheet_name, start_date):
+    """
+    개선된 데이터 로드 및 처리 함수
+    (process_data_250620.py에서 가져온 함수)
+    """
+    # 열 이름 생성
+    column_names = create_proper_column_names(file_path, sheet_name)
+    
+    # 실제 데이터 읽기
+    data = pd.read_excel(file_path, sheet_name=sheet_name, header=None, skiprows=3)
+    data.columns = column_names
+    
+    # Date 열 변환
+    data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+    
+    # 시작 날짜 이후 데이터만 필터링
+    data = data[data['Date'] >= start_date]
+    
+    # 불필요한 열 제거
+    data = data.loc[:, ~data.columns.str.startswith('Unnamed')]
+    
+    return data
+
+def process_excel_data_complete(file_path, sheet_name='29 Nov 2010 till todate', start_date='2013-01-04'):
+    """
+    Excel 데이터를 완전히 처리하는 통합 함수
+    (process_data_250620.py의 메인 처리 파이프라인을 함수화)
+    """
+    try:
+        logger.info("=== Excel 데이터 완전 처리 시작 ===")
+        
+        # 1. 데이터 로드 및 기본 처리
+        cleaned_data = load_and_process_data_improved(file_path, sheet_name, pd.Timestamp(start_date))
+        logger.info(f"초기 데이터 형태: {cleaned_data.shape}")
+        
+        # 2. 70% 이상 결측치가 있는 열 제거
+        final_data = remove_high_missing_columns(cleaned_data, threshold=70)
+        
+        # 3. 10% 이상 결측치가 있는 열 제거  
+        final_cleaned_data = remove_missing_and_analyze(final_data, threshold=10)
+        
+        # 4. 텍스트 형태의 결측치 처리
+        text_patterns = ['NOP', 'No Publication', 'N/A', 'na', 'NA', 'none', 'None', '-']
+        find_text_missings(final_cleaned_data, text_patterns)
+        
+        # 5. 텍스트 값들 정제
+        final_cleaned_data_v2 = clean_text_values_advanced(final_cleaned_data)
+        
+        # 6. 최종 정제
+        final_data_clean = final_clean_data_improved(final_cleaned_data_v2)
+        
+        # 7. 결측치 채우기
+        filled_final_data = fill_missing_values_advanced(final_data_clean)
+        
+        # 8. 날짜 범위 조정
+        trimmed_data = clean_and_trim_data(filled_final_data, start_date='2013-02-06')
+        
+        # 9. 열 이름을 최종 형태로 변경
+        final_renamed_data = rename_columns_to_standard(trimmed_data)
+        
+        logger.info(f"\n=== 최종 결과 ===")
+        logger.info(f"최종 데이터 형태: {final_renamed_data.shape}")
+        logger.info(f"최종 열 이름들: {len(final_renamed_data.columns)}개")
+        
+        return final_renamed_data
+        
+    except Exception as e:
+        logger.error(f"Excel 데이터 처리 중 오류 발생: {str(e)}")
+        logger.error(traceback.format_exc())
+        return None
+
 # 데이터 로딩 및 전처리 함수
 def load_data(file_path, model_type=None):
     """
@@ -786,9 +1552,64 @@ def load_data(file_path, model_type=None):
         pd.DataFrame: 전처리된 데이터프레임
     """
     logger.info(f"Loading data with model_type: {model_type}")
-    df = pd.read_csv(file_path)
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.set_index('Date', inplace=True)
+
+    
+    # 파일 확장자에 따라 다른 로드 방법 사용
+    if file_path.endswith('.csv'):
+        logger.info("Loading CSV file with standard processing")
+        df = pd.read_csv(file_path)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        
+        # 기본적인 결측치 처리
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+    elif file_path.endswith(('.xlsx', '.xls')):
+        logger.info("Loading Excel file with advanced processing pipeline")
+        
+        # process_data_250620.py의 완전한 Excel 처리 파이프라인 사용
+        try:
+            # 1. Excel 파일의 적절한 시트 이름 찾기
+            sheet_name = '29 Nov 2010 till todate'  # 기본 시트명
+            try:
+                # 파일의 시트 목록 확인
+                excel_file = pd.ExcelFile(file_path)
+                available_sheets = excel_file.sheet_names
+                logger.info(f"Available sheets: {available_sheets}")
+                
+                # 적절한 시트 찾기
+                if sheet_name not in available_sheets:
+                    sheet_name = available_sheets[0]  # 첫 번째 시트 사용
+                    logger.info(f"Default sheet not found, using '{sheet_name}' sheet")
+            except:
+                sheet_name = 0  # 인덱스로 첫 번째 시트 사용
+            
+            # 2. process_data_250620.py의 완전한 처리 파이프라인 실행
+            df = process_excel_data_complete(file_path, sheet_name, start_date='2013-01-04')
+            
+            if df is None:
+                logger.error("Excel 데이터 처리에 실패했습니다. 기본 방식으로 다시 시도합니다.")
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df['Date'] = pd.to_datetime(df['Date'])
+            else:
+                logger.info(f"Excel file processed successfully with advanced pipeline: {df.shape}")
+                
+            # Date를 인덱스로 설정
+            if 'Date' in df.columns:
+                df.set_index('Date', inplace=True)
+                
+        except Exception as e:
+            logger.error(f"Advanced Excel processing failed: {e}")
+            logger.info("Falling back to standard Excel loading method")
+            
+            # 실패시 기본 방식으로 로드
+            df = pd.read_excel(file_path)
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+    
+    else:
+        raise ValueError(f"Unsupported file format: {file_path}")
     
     logger.info(f"Original data shape: {df.shape} (from {df.index.min()} to {df.index.max()})")
     
@@ -1799,32 +2620,68 @@ def find_compatible_hyperparameters(current_file_path, current_period):
         logger.error(f"하이퍼파라미터 호환성 탐색 중 오류: {str(e)}")
         return None
 
-def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_col_idx, device, current_period, file_path=None, n_trials=30, k_folds=10, use_cache=True):
+def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_col_idx, device, current_period, file_path=None, n_trials=30, k_folds=10, use_cache=True, volatile_mode=False):
     """
     시계열 K-fold 교차 검증을 사용하여 반월별 데이터에 대한 하이퍼파라미터 최적화 (Purchase_decision_5days.py 방식)
+    
+    Args:
+        volatile_mode (bool): 급등락 대응 모드 여부. True이면 별도 하이퍼파라미터 파일로 저장
     """
-    logger.info(f"\n===== {current_period} 하이퍼파라미터 최적화 시작 (시계열 {k_folds}-fold 교차 검증) =====")
+    # 일관된 하이퍼파라미터 최적화를 위한 시드 고정
+    set_seed()
+    
+    # 날짜별 volatile 파일명 생성 (덮어쓰기 방지)
+    if volatile_mode:
+        current_date_str = datetime.now().strftime('%Y%m%d')
+        mode_suffix = f"_volatile_{current_date_str}"
+    else:
+        mode_suffix = ""
+    mode_desc = "급등락 대응" if volatile_mode else "일반"
+    
+    logger.info(f"\n===== {current_period} 하이퍼파라미터 최적화 시작 ({mode_desc} 모드, 시계열 {k_folds}-fold 교차 검증) =====")
     
     # 🔧 확장된 하이퍼파라미터 캐시 로직 - 기존 파일의 하이퍼파라미터도 탐색
     file_cache_dir = get_file_cache_dirs(file_path)['models']
-    cache_file = os.path.join(file_cache_dir, f"hyperparams_kfold_{current_period.replace('-', '_')}.json")
+    cache_file = os.path.join(file_cache_dir, f"hyperparams_kfold_{current_period.replace('-', '_')}{mode_suffix}.json")
     logger.info(f"📁 하이퍼파라미터 캐시 파일: {cache_file}")
     
     # models 디렉토리 생성
     os.makedirs(file_cache_dir, exist_ok=True)
     
-    # 🔍 1단계: 현재 파일의 하이퍼파라미터 캐시 확인
-    if use_cache and os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r') as f:
-                cached_params = json.load(f)
-            logger.info(f"✅ [{current_period}] 현재 파일의 캐시된 하이퍼파라미터 로드 완료")
-            return cached_params
-        except Exception as e:
-            logger.error(f"캐시 파일 로드 오류: {str(e)}")
+    # 🔍 1단계: 하이퍼파라미터 캐시 확인 (volatile 우선 → 일반 순서)
+    if use_cache and not volatile_mode:
+        # 1-1. volatile 하이퍼파라미터가 있으면 우선 사용 (날짜별로 가장 최신 것 선택)
+        volatile_pattern = f"hyperparams_kfold_{current_period.replace('-', '_')}_volatile_*.json"
+        volatile_files = glob.glob(os.path.join(file_cache_dir, volatile_pattern))
+        
+        if volatile_files:
+            # 가장 최신 volatile 파일 선택 (파일명의 날짜 기준)
+            latest_volatile = max(volatile_files, key=lambda x: os.path.basename(x).split('_')[-1])
+            try:
+                with open(latest_volatile, 'r') as f:
+                    cached_params = json.load(f)
+                volatile_date = os.path.basename(latest_volatile).split('_')[-1].replace('.json', '')
+                logger.info(f"🔥 [{current_period}] 기존 급등락 대응 하이퍼파라미터 발견! ({volatile_date})")
+                logger.info(f"    📁 File: {os.path.basename(latest_volatile)}")
+                return cached_params
+            except Exception as e:
+                logger.error(f"Volatile 캐시 파일 로드 오류: {str(e)}")
+        
+        # 1-2. volatile 파라미터가 없으면 일반 파라미터 확인
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    cached_params = json.load(f)
+                logger.info(f"✅ [{current_period}] 현재 파일의 일반 하이퍼파라미터 로드 완료")
+                return cached_params
+            except Exception as e:
+                logger.error(f"일반 캐시 파일 로드 오류: {str(e)}")
     
-    # 🔍 2단계: 데이터 확장 시 기존 파일의 동일 기간 하이퍼파라미터만 탐색 (대체 기간 사용 금지)
-    if use_cache:
+    if volatile_mode:
+        logger.info(f"🔥 [{current_period}] 급등락 대응 모드: 기존 캐시를 무시하고 새로운 하이퍼파라미터 최적화를 진행합니다.")
+    
+    # 🔍 2단계: 데이터 확장 시 기존 파일의 동일 기간 하이퍼파라미터만 탐색 (급등락 모드에서는 건너뛰기)
+    if use_cache and not volatile_mode:
         logger.info(f"🔍 [{current_period}] 현재 파일에 캐시가 없습니다. 기존 파일에서 동일 기간의 하이퍼파라미터만 탐색합니다...")
         compatible_hyperparams = find_compatible_hyperparameters(file_path, current_period)
         if compatible_hyperparams:
@@ -1891,6 +2748,9 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
     
     # Optuna 목적 함수 정의
     def objective(trial):
+        # 일관된 하이퍼파라미터 최적화를 위한 시드 고정
+        set_seed(SEED + trial.number)  # trial마다 다른 시드로 다양성 보장하면서도 재현 가능
+        
         # 하이퍼파라미터 범위 수정 - 시퀀스 길이 최대값 제한
         max_seq_length = min(fold_size - predict_window - 5, 60)
         
@@ -2861,7 +3721,7 @@ def get_saved_predictions_list(limit=100):
 
 def load_accumulated_predictions_from_csv(start_date, end_date=None, limit=None, file_path=None):
     """
-    CSV에서 누적 예측 결과를 빠르게 불러오는 함수
+    CSV에서 누적 예측 결과를 빠르게 불러오는 함수 (최적화됨)
     새로운 파일명 체계와 스마트 캐시 시스템 사용
     
     Parameters:
@@ -2880,8 +3740,7 @@ def load_accumulated_predictions_from_csv(start_date, end_date=None, limit=None,
     list : 누적 예측 결과 리스트
     """
     try:
-        logger.info(f"🔍 [CACHE_LOAD] Starting accumulated predictions load")
-        logger.info(f"🔍 [CACHE_LOAD] Input params: start_date={start_date}, end_date={end_date}, file_path={file_path}")
+        logger.info(f"🔍 [CACHE_LOAD] Loading predictions from {start_date} to {end_date or 'latest'}")
         
         # 날짜 형식 통일
         if isinstance(start_date, str):
@@ -2889,27 +3748,21 @@ def load_accumulated_predictions_from_csv(start_date, end_date=None, limit=None,
         if end_date and isinstance(end_date, str):
             end_date = pd.to_datetime(end_date)
         
-        logger.info(f"🔍 [CACHE_LOAD] Loading accumulated predictions from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d') if end_date else 'latest'}")
-        
-        # 저장된 예측 목록 조회 (파일별 캐시 디렉토리 사용)
+        # 저장된 예측 목록 조회 (최적화된 방식)
         all_predictions = []
         if file_path:
-            logger.info(f"🔍 [CACHE_LOAD] Searching in file-specific cache directory for {os.path.basename(file_path)}")
             try:
-                all_predictions = get_saved_predictions_list_for_file(file_path, limit=1000)  # ✅ 파일별 검색
-                logger.info(f"🎯 [CACHE_LOAD] Found {len(all_predictions)} prediction files in cache")
+                all_predictions = get_saved_predictions_list_for_file(file_path, limit=1000)
+                logger.info(f"🎯 [CACHE_LOAD] Found {len(all_predictions)} prediction files")
             except Exception as e:
-                logger.error(f"❌ [CACHE_LOAD] Error in get_saved_predictions_list_for_file: {str(e)}")
-                logger.error(traceback.format_exc())
+                logger.warning(f"⚠️ [CACHE_LOAD] Error in file-specific search: {str(e)}")
                 return []
         else:
-            logger.info(f"🔍 [CACHE_LOAD] Searching in global cache directory (legacy mode)")
             try:
-                all_predictions = get_saved_predictions_list(limit=1000)  # 전체 검색 (하위 호환)
-                logger.info(f"🎯 [CACHE_LOAD] Found {len(all_predictions)} prediction files in legacy cache")
+                all_predictions = get_saved_predictions_list(limit=1000)
+                logger.info(f"🎯 [CACHE_LOAD] Found {len(all_predictions)} prediction files (global)")
             except Exception as e:
-                logger.error(f"❌ [CACHE_LOAD] Error in get_saved_predictions_list: {str(e)}")
-                logger.error(traceback.format_exc())
+                logger.warning(f"⚠️ [CACHE_LOAD] Error in global search: {str(e)}")
                 return []
         
         # 날짜 범위 필터링 (데이터 기준일 기준)
@@ -4492,6 +5345,7 @@ def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, 
         # 상태 초기화
         prediction_state['is_predicting'] = True
         prediction_state['prediction_progress'] = 5
+        prediction_state['prediction_start_time'] = time.time()  # 시작 시간 기록
         prediction_state['error'] = None
         prediction_state['accumulated_predictions'] = []
         prediction_state['accumulated_metrics'] = {}
@@ -4948,6 +5802,9 @@ def prepare_data(train_data, val_data, sequence_length, predict_window, target_c
 def train_model(features, target_col, current_date, historical_data, device, params):
     """LSTM 모델 학습"""
     try:
+        # 일관된 학습 결과를 위한 시드 고정
+        set_seed()
+        
         # 특성 이름 확인
         if target_col not in features:
             features.append(target_col)
@@ -5084,12 +5941,15 @@ def train_model(features, target_col, current_date, historical_data, device, par
         logger.error(traceback.format_exc())
         raise e
 
-def generate_predictions(df, current_date, predict_window=23, features=None, target_col='MOPJ', file_path=None):
+def generate_predictions(df, current_date, predict_window=23, features=None, target_col='MOPJ', file_path=None, volatile_mode=False):
     """
     개선된 예측 수행 함수 - 예측 시작일의 반월 기간 하이퍼파라미터 사용
     🔑 데이터 누출 방지: current_date 이후의 실제값은 사용하지 않음
     """
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
+        
         # 디바이스 설정
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"Using device: {device}")
@@ -5178,7 +6038,7 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
         logger.info(f"  ⚖️  Scaler fitted on data up to {format_date(current_date)}")
         logger.info(f"  📊 Scaled data shape: {scaled_data.shape}")
         
-        # ✅ 핵심: 예측 시작일의 반월 기간 하이퍼파라미터 사용
+        # ✅ 핵심: 예측 시작일의 반월 기간 하이퍼파라미터 사용 (급등락 모드 지원)
         optimized_params = optimize_hyperparameters_semimonthly_kfold(
             train_data=scaled_data,
             input_size=len(selected_features),
@@ -5188,7 +6048,8 @@ def generate_predictions(df, current_date, predict_window=23, features=None, tar
             file_path=file_path,  # 🔑 파일 경로 전달
             n_trials=30,
             k_folds=10,
-            use_cache=True
+            use_cache=True,
+            volatile_mode=volatile_mode  # 🔥 급등락 대응 모드
         )
         
         logger.info(f"✅ Using hyperparameters for prediction start period: {prediction_semimonthly_period}")
@@ -5528,6 +6389,9 @@ def generate_predictions_compatible(df, current_date, predict_window=23, feature
     (새로운 구조 + 기존 형태 변환)
     """
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
+        
         # 새로운 generate_predictions 함수 실행
         new_results = generate_predictions(df, current_date, predict_window, features, target_col)
         
@@ -5558,15 +6422,18 @@ def generate_predictions_compatible(df, current_date, predict_window=23, feature
         logger.error(f"Error in compatible prediction generation: {str(e)}")
         raise e
 
-def generate_predictions_with_save(df, current_date, predict_window=23, features=None, target_col='MOPJ', save_to_csv=True, file_path=None):
+def generate_predictions_with_save(df, current_date, predict_window=23, features=None, target_col='MOPJ', save_to_csv=True, file_path=None, volatile_mode=False):
     """
     예측 수행 및 스마트 캐시 저장이 포함된 함수 (수정됨)
     """
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
+        
         logger.info(f"Starting prediction with smart cache save for {current_date}")
         
-        # 기존 generate_predictions 함수 실행
-        results = generate_predictions(df, current_date, predict_window, features, target_col, file_path)
+        # 기존 generate_predictions 함수 실행 (급등락 모드 전달)
+        results = generate_predictions(df, current_date, predict_window, features, target_col, file_path, volatile_mode)
         
         # 스마트 캐시 저장 옵션이 활성화된 경우
         if save_to_csv:
@@ -5617,7 +6484,7 @@ def generate_predictions_with_save(df, current_date, predict_window=23, features
             # 예측 자체가 실패한 경우
             raise e
 
-def generate_predictions_with_attention_save(df, current_date, predict_window=23, features=None, target_col='MOPJ', save_to_csv=True, file_path=None):
+def generate_predictions_with_attention_save(df, current_date, predict_window=23, features=None, target_col='MOPJ', save_to_csv=True, file_path=None, volatile_mode=False):
     """
     예측 수행 및 attention 포함 CSV 저장 함수
     
@@ -5641,10 +6508,13 @@ def generate_predictions_with_attention_save(df, current_date, predict_window=23
     dict : 예측 결과 (attention 데이터 포함)
     """
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
+        
         logger.info(f"Starting prediction with attention save for {current_date}")
         
-        # 기존 generate_predictions 함수 실행
-        results = generate_predictions(df, current_date, predict_window, features, target_col, file_path)
+        # 기존 generate_predictions 함수 실행 (급등락 모드 전달)
+        results = generate_predictions(df, current_date, predict_window, features, target_col, file_path, volatile_mode)
         
         # attention 포함 저장 옵션이 활성화된 경우
         if save_to_csv:
@@ -5781,83 +6651,33 @@ def check_existing_prediction(current_date):
         else:
             logger.warning(f"❌ Predictions directory does not exist: {file_predictions_dir}")
         
-        # 🎯 2단계: 다른 파일 캐시 디렉토리에서 호환 캐시 찾기
-        logger.info("🔍 Searching in other file cache directories...")
-        
-        cache_root = Path(CACHE_ROOT_DIR)
-        if not cache_root.exists():
-            logger.info("❌ Cache root directory does not exist")
-            return None
-        
+        # 🎯 2단계: 빠른 인덱스 기반 검색 (다른 파일 캐시)
         current_file_path = prediction_state.get('current_file', None)
-        logger.info(f"  📂 Current file: {current_file_path}")
-        
-        # 모든 파일 캐시 디렉토리 스캔
-        other_dirs_checked = 0
-        for file_dir in cache_root.iterdir():
-            if not file_dir.is_dir() or file_dir.name == "default":
-                continue
+        if current_file_path:
+            # 캐시 인덱스가 비어있으면 빌드
+            if not _cache_lookup_index:
+                logger.info("🔄 Building cache lookup index...")
+                build_cache_lookup_index()
             
-            # 현재 파일의 디렉토리는 이미 확인했으므로 건너뛰기
-            if file_dir == cache_dirs['root']:
-                continue
+            # 파일 해시 계산 (최적화된 캐싱 버전)
+            current_file_hash = get_data_content_hash(current_file_path)
             
-            other_dirs_checked += 1
-            logger.info(f"  🔍 Checking other directory: {file_dir.name}")
-            
-            # 각 파일 캐시 디렉토리의 predictions 하위 디렉토리에서 검색
-            other_predictions_dir = file_dir / 'predictions'
-            if not other_predictions_dir.exists():
-                logger.info(f"    ❌ No predictions subdirectory in {file_dir.name}")
-                continue
+            if current_file_hash:
+                cache_key = f"{current_file_hash}_{current_semimonthly}"
                 
-            prediction_files = list(other_predictions_dir.glob("prediction_start_*_meta.json"))
-            logger.info(f"    📋 Found {len(prediction_files)} prediction files in {file_dir.name}")
-            for meta_file in prediction_files:
-                try:
-                    with open(meta_file, 'r', encoding='utf-8') as f:
-                        meta_data = json.load(f)
+                if cache_key in _cache_lookup_index:
+                    cache_info = _cache_lookup_index[cache_key]
+                    predictions_dir = Path(cache_info['predictions_dir'])
                     
-                    # 파일 해시 비교
-                    current_file_hash = get_data_content_hash(current_file_path) if current_file_path else None
-                    cached_file_hash = meta_data.get('file_content_hash')
+                    # 메타 파일에서 예측 날짜 추출
+                    meta_file_path = cache_info['meta_file']
+                    cached_date_str = Path(meta_file_path).stem.replace('prediction_start_', '').replace('_meta', '')
+                    cached_prediction_date = pd.to_datetime(cached_date_str, format='%Y%m%d')
                     
-                    logger.info(f"    🔍 Checking {meta_file.name}:")
-                    logger.info(f"      📝 Current file hash: {current_file_hash[:12] if current_file_hash else 'None'}...")
-                    logger.info(f"      📝 Cached file hash:  {cached_file_hash[:12] if cached_file_hash else 'None'}...")
-                    
-                    if cached_file_hash and cached_file_hash == current_file_hash:
-                        # 동일한 파일 내용에서 생성된 예측 발견 - 반월 정보 추가 확인
-                        cached_date_str = meta_file.stem.replace('prediction_start_', '').replace('_meta', '')
-                        cached_prediction_date = pd.to_datetime(cached_date_str, format='%Y%m%d')
-                        
-                        # 🔑 중요: 반월 기간 비교 - 다른 반월이면 캐시 사용하지 않음
-                        cached_data_end_date = meta_data.get('data_end_date')
-                        if cached_data_end_date:
-                            cached_data_end_date = pd.to_datetime(cached_data_end_date)
-                            cached_semimonthly = get_semimonthly_period(cached_data_end_date)
-                            
-                            logger.info(f"      📅 Current semimonthly: {current_semimonthly}")
-                            logger.info(f"      📅 Cached semimonthly:  {cached_semimonthly}")
-                            
-                            if cached_semimonthly != current_semimonthly:
-                                logger.info(f"    ❌ Semimonthly period mismatch - skipping cache")
-                                logger.info(f"      📅 Different periods: {current_semimonthly} vs {cached_semimonthly}")
-                                continue
-                        
-                        logger.info(f"🎯 Found compatible prediction cache in other directory!")
-                        logger.info(f"  📁 Directory: {file_dir.name}")
-                        logger.info(f"  📅 Cached prediction date: {cached_prediction_date.strftime('%Y-%m-%d')}")
-                        logger.info(f"  📅 Semimonthly period match: {current_semimonthly}")
-                        logger.info(f"  📝 File hash match: {cached_file_hash[:12]}...")
-                        
-                        return load_prediction_with_attention_from_csv_in_dir(cached_prediction_date, other_predictions_dir)
-                        
-                except Exception as e:
-                    logger.debug(f"  ⚠️  Error reading meta file {meta_file}: {str(e)}")
-                    continue
-        
-        logger.info(f"🔍 Summary: Checked {other_dirs_checked} other cache directories")
+                    logger.info(f"🎯 Found compatible cache via index! ({cached_prediction_date.strftime('%Y-%m-%d')})")
+                    return load_prediction_with_attention_from_csv_in_dir(cached_prediction_date, predictions_dir)
+                else:
+                    logger.info(f"❌ No cache found in index for key: {cache_key[:20]}...")
         logger.info("❌ No compatible prediction cache found")
         return None
         
@@ -6085,6 +6905,9 @@ class VARMAXSemiMonthlyForecaster:
     """VARMAX 기반 반월별 시계열 예측 클래스 - 세 번째 탭용"""
     
     def __init__(self, file_path, result_var='MOPJ', pred_days=50):
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
+        
         self.file_path = file_path
         self.result_var = result_var
         self.pred_days = pred_days
@@ -6703,13 +7526,16 @@ class VARMAXSemiMonthlyForecaster:
                 'error': str(e)
             }
 
-def background_prediction_simple_compatible(file_path, current_date, save_to_csv=True, use_cache=True):
+def background_prediction_simple_compatible(file_path, current_date, save_to_csv=True, use_cache=True, volatile_mode=False):
     """호환성을 유지하는 백그라운드 예측 함수 - 캐시 우선 사용, JSON 안전성 보장"""
     global prediction_state
     
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
         prediction_state['is_predicting'] = True
         prediction_state['prediction_progress'] = 10
+        prediction_state['prediction_start_time'] = time.time()  # 시작 시간 기록
         prediction_state['error'] = None
         prediction_state['latest_file_path'] = file_path  # 파일 경로 저장
         prediction_state['current_file'] = file_path  # 캐시 연동용 파일 경로
@@ -6742,8 +7568,8 @@ def background_prediction_simple_compatible(file_path, current_date, save_to_csv
         
         current_date = adjusted_date
         
-        # 캐시 확인 (우선 사용)
-        if use_cache:
+        # 캐시 확인 (volatile_mode가 False일 때만)
+        if use_cache and not volatile_mode:
             logger.info("🔍 Checking for existing prediction cache...")
             prediction_state['prediction_progress'] = 30
             
@@ -6758,12 +7584,18 @@ def background_prediction_simple_compatible(file_path, current_date, save_to_csv
                 logger.error(f"  ❌ Cache check failed with error: {str(cache_check_error)}")
                 logger.error(f"  📝 Error traceback: {traceback.format_exc()}")
                 cached_result = None
+        elif volatile_mode:
+            logger.info("🔥 Volatile mode enabled - skipping cache to force new hyperparameter optimization")
+            cached_result = None
+        else:
+            logger.info("🆕 Cache disabled - running new prediction...")
+            cached_result = None
             
-            if cached_result and cached_result.get('success'):
-                logger.info("🎉 Found existing prediction! Loading from cache...")
-                prediction_state['prediction_progress'] = 50
-                
-                try:
+        if cached_result and cached_result.get('success'):
+            logger.info("🎉 Found existing prediction! Loading from cache...")
+            prediction_state['prediction_progress'] = 50
+            
+            try:
                     # 캐시된 데이터 로드 및 정리
                     predictions = cached_result['predictions']
                     metadata = cached_result['metadata']
@@ -6864,19 +7696,18 @@ def background_prediction_simple_compatible(file_path, current_date, save_to_csv
                     logger.info("✅ Cache prediction completed successfully!")
                     return
                     
-                except Exception as cache_error:
-                    logger.warning(f"⚠️  Cache processing failed: {str(cache_error)}")
-                    logger.info("🔄 Falling back to new prediction...")
-            else:
-                logger.info("  📋 No usable cache found - proceeding with new prediction")
+            except Exception as cache_error:
+                logger.warning(f"⚠️  Cache processing failed: {str(cache_error)}")
+                logger.info("🔄 Falling back to new prediction...")
         else:
-            logger.info("🆕 Cache disabled - running new prediction...")
+            logger.info("  📋 No usable cache found - proceeding with new prediction")
         
-        # 새로운 예측 수행
-        logger.info("🤖 Running new prediction...")
+        # 새로운 예측 수행 (급등락 모드 지원)
+        logger.info(f"🤖 Running new prediction (volatile_mode: {volatile_mode})...")
         prediction_state['prediction_progress'] = 40
         
-        results = generate_predictions_compatible(df, current_date)
+        # volatile_mode 전달하여 예측 수행
+        results = generate_predictions_with_save(df, current_date, save_to_csv=save_to_csv, file_path=file_path, volatile_mode=volatile_mode)
         prediction_state['prediction_progress'] = 80
         
         # 새로운 예측 결과 정리 (JSON 안전성 보장)
@@ -7322,28 +8153,39 @@ def test_cache_dirs():
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    """스마트 캐시 기능이 있는 CSV 파일 업로드 API"""
+    """스마트 캐시 기능이 있는 데이터 파일 업로드 API (CSV, Excel 지원)"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
         
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
-        
-    if file and file.filename.endswith('.csv'):
+    
+    # 지원되는 파일 형식 확인
+    allowed_extensions = ['.csv', '.xlsx', '.xls']
+    file_ext = os.path.splitext(file.filename.lower())[1]
+    
+    if file and file_ext in allowed_extensions:
         try:
-            # 임시 파일명 생성
+            # 임시 파일명 생성 (원본 확장자 유지)
             original_filename = secure_filename(file.filename)
-            temp_filename = secure_filename(f"temp_{int(time.time())}.csv")
+            temp_filename = secure_filename(f"temp_{int(time.time())}{file_ext}")
             temp_filepath = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
             
             # 임시 파일로 저장
             file.save(temp_filepath)
             logger.info(f"📤 [UPLOAD] File saved temporarily: {temp_filename}")
             
-            # 📊 데이터 분석 - 날짜 범위 확인
+            # 📊 데이터 분석 - 날짜 범위 확인 (파일 형식에 맞게 로드)
             try:
-                df_analysis = pd.read_csv(temp_filepath)
+                if file_ext == '.csv':
+                    df_analysis = pd.read_csv(temp_filepath)
+                else:  # Excel 파일
+                    # Excel 파일은 load_data 함수를 사용하여 고급 처리
+                    df_analysis = load_data(temp_filepath)
+                    # 인덱스가 Date인 경우 컬럼으로 복원
+                    if df_analysis.index.name == 'Date':
+                        df_analysis = df_analysis.reset_index()
                 if 'Date' in df_analysis.columns:
                     df_analysis['Date'] = pd.to_datetime(df_analysis['Date'])
                     start_date = df_analysis['Date'].min()
@@ -7483,14 +8325,26 @@ def upload_file():
                     # 🔄 데이터 확장의 경우: 새 파일을 사용하되, 캐시 정보는 유지
                     logger.info(f"📈 [EXTENSION] Data extension detected - using NEW file with cache info")
                     
-                    # 새 파일을 정식 파일명으로 저장
-                    content_hash = get_data_content_hash(temp_filepath)
-                    final_filename = f"data_{content_hash}.csv" if content_hash else temp_filename
+                    # 새 파일을 정식 파일명으로 저장 (원본 확장자 유지)
+                    try:
+                        content_hash = get_data_content_hash(temp_filepath)
+                        final_filename = f"data_{content_hash}{file_ext}" if content_hash else temp_filename
+                    except Exception as hash_error:
+                        logger.warning(f"⚠️ Hash calculation failed for extended file, using timestamp-based filename: {str(hash_error)}")
+                        final_filename = temp_filename  # 해시 실패 시 임시 파일명 유지
+                    
                     final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                     
                     if temp_filepath != final_filepath:
-                        shutil.move(temp_filepath, final_filepath)
-                        logger.info(f"📝 [UPLOAD] Extended file renamed: {final_filename}")
+                        try:
+                            # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
+                            time.sleep(0.1)
+                            shutil.move(temp_filepath, final_filepath)
+                            logger.info(f"📝 [UPLOAD] Extended file renamed: {final_filename}")
+                        except OSError as move_error:
+                            logger.warning(f"⚠️ Extended file move failed, keeping original filename: {str(move_error)}")
+                            final_filepath = temp_filepath
+                            final_filename = temp_filename
                         
                     response_data['filepath'] = final_filepath
                     response_data['filename'] = final_filename
@@ -7509,26 +8363,51 @@ def upload_file():
                     }
                     
                 else:
-                    # 새 파일은 유지 (부분/다중 캐시의 경우)
-                    content_hash = get_data_content_hash(temp_filepath)
-                    final_filename = f"data_{content_hash}.csv" if content_hash else temp_filename
+                    # 새 파일은 유지 (부분/다중 캐시의 경우, 원본 확장자 유지)
+                    try:
+                        content_hash = get_data_content_hash(temp_filepath)
+                        final_filename = f"data_{content_hash}{file_ext}" if content_hash else temp_filename
+                    except Exception as hash_error:
+                        logger.warning(f"⚠️ Hash calculation failed, using timestamp-based filename: {str(hash_error)}")
+                        final_filename = temp_filename  # 해시 실패 시 임시 파일명 유지
+                    
                     final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                     
                     if temp_filepath != final_filepath:
-                        shutil.move(temp_filepath, final_filepath)
-                        logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
+                        try:
+                            # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
+                            time.sleep(0.1)
+                            shutil.move(temp_filepath, final_filepath)
+                            logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
+                        except OSError as move_error:
+                            logger.warning(f"⚠️ File move failed, keeping original filename: {str(move_error)}")
+                            final_filepath = temp_filepath
+                            final_filename = temp_filename
                         
                     response_data['filepath'] = final_filepath
                     response_data['filename'] = final_filename
+            
             else:
-                # 새 파일인 경우 정식 파일명으로 변경
-                content_hash = get_data_content_hash(temp_filepath)
-                final_filename = f"data_{content_hash}.csv" if content_hash else temp_filename
+                # 새 파일인 경우 정식 파일명으로 변경 (원본 확장자 유지)
+                try:
+                    content_hash = get_data_content_hash(temp_filepath)
+                    final_filename = f"data_{content_hash}{file_ext}" if content_hash else temp_filename
+                except Exception as hash_error:
+                    logger.warning(f"⚠️ Hash calculation failed, using timestamp-based filename: {str(hash_error)}")
+                    final_filename = temp_filename  # 해시 실패 시 임시 파일명 유지
+                
                 final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
                 
                 if temp_filepath != final_filepath:
-                    shutil.move(temp_filepath, final_filepath)
-                    logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
+                    try:
+                        # 파일이 사용 중일 수 있으므로 잠시 대기 후 재시도
+                        time.sleep(0.1)
+                        shutil.move(temp_filepath, final_filepath)
+                        logger.info(f"📝 [UPLOAD] File renamed: {final_filename}")
+                    except OSError as move_error:
+                        logger.warning(f"⚠️ File move failed, keeping original filename: {str(move_error)}")
+                        final_filepath = temp_filepath
+                        final_filename = temp_filename
                     
                 response_data['filepath'] = final_filepath
                 response_data['filename'] = final_filename
@@ -7550,7 +8429,7 @@ def upload_file():
                 pass
             return jsonify({'error': f'Error processing file: {str(e)}'}), 500
     
-    return jsonify({'error': 'Invalid file type. Only CSV files are allowed'}), 400
+    return jsonify({'error': 'Invalid file type. Only CSV and Excel files (.csv, .xlsx, .xls) are allowed'}), 400
 
 @app.route('/api/holidays', methods=['GET'])
 def get_holidays():
@@ -7671,16 +8550,39 @@ def get_file_metadata():
         return jsonify({'error': 'File not found'}), 404
     
     try:
-        # 기본 정보만 읽어서 반환
-        df = pd.read_csv(filepath, nrows=5)  # 처음 5행만 읽기
-        columns = df.columns.tolist()
-        latest_date = None
+        # 파일 확장자에 따라 읽기 방식 결정
+        file_ext = os.path.splitext(filepath.lower())[1]
         
-        if 'Date' in df.columns:
-            # 날짜 정보를 별도로 읽어서 최신 날짜 확인
-            dates_df = pd.read_csv(filepath, usecols=['Date'])
-            dates_df['Date'] = pd.to_datetime(dates_df['Date'])
-            latest_date = dates_df['Date'].max().strftime('%Y-%m-%d')
+        if file_ext == '.csv':
+            # CSV 파일 처리
+            df = pd.read_csv(filepath, nrows=5)  # 처음 5행만 읽기
+            columns = df.columns.tolist()
+            latest_date = None
+            
+            if 'Date' in df.columns:
+                # 날짜 정보를 별도로 읽어서 최신 날짜 확인
+                dates_df = pd.read_csv(filepath, usecols=['Date'])
+                dates_df['Date'] = pd.to_datetime(dates_df['Date'])
+                latest_date = dates_df['Date'].max().strftime('%Y-%m-%d')
+        else:
+            # Excel 파일 처리 (고급 처리 사용)
+            df = load_data(filepath)
+            # 인덱스가 Date인 경우 컬럼으로 복원
+            if df.index.name == 'Date':
+                df = df.reset_index()
+            
+            # 처음 5행만 선택
+            df = df.head(5)
+            columns = df.columns.tolist()
+            latest_date = None
+            
+            if 'Date' in df.columns:
+                # 전체 데이터에서 최신 날짜 확인
+                full_df = load_data(filepath)
+                if full_df.index.name == 'Date':
+                    latest_date = pd.to_datetime(full_df.index).max().strftime('%Y-%m-%d')
+                else:
+                    latest_date = pd.to_datetime(full_df['Date']).max().strftime('%Y-%m-%d')
         
         return jsonify({
             'success': True,
@@ -7713,8 +8615,18 @@ def get_available_dates():
         logger.info(f"  ⏰ Modified time: {datetime.fromtimestamp(current_file_mtime).strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"  🔄 Force refresh: {force_refresh}")
         
-        # 파일 데이터 로드 및 분석 (항상 최신 파일 내용 확인)
-        df = pd.read_csv(filepath)
+        # 파일 데이터 로드 및 분석 (파일 형식에 맞게, 항상 최신 파일 내용 확인)
+        # 🔑 단일 날짜 예측용: LSTM 모델 타입 지정하여 2022년 이후 데이터만 로드
+        file_ext = os.path.splitext(filepath.lower())[1]
+        if file_ext == '.csv':
+            df = pd.read_csv(filepath)
+        else:
+            # Excel 파일인 경우 load_data 함수 사용 (LSTM 모델 타입 지정)
+            df = load_data(filepath, model_type='lstm')
+            # 인덱스가 Date인 경우 컬럼으로 복원
+            if df.index.name == 'Date':
+                df = df.reset_index()
+        
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
         
@@ -7867,8 +8779,17 @@ def refresh_file_data():
             refresh_needed = True
             refresh_reason.append("No existing cache")
         
-        # 파일 데이터 분석
-        df = pd.read_csv(filepath)
+        # 파일 데이터 분석 (파일 형식에 맞게)
+        file_ext = os.path.splitext(filepath.lower())[1]
+        if file_ext == '.csv':
+            df = pd.read_csv(filepath)
+        else:
+            # Excel 파일인 경우 load_data 함수 사용
+            df = load_data(filepath)
+            # 인덱스가 Date인 경우 컬럼으로 복원
+            if df.index.name == 'Date':
+                df = df.reset_index()
+        
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date')
         
@@ -7949,9 +8870,21 @@ def debug_compare_files():
         file1_mtime = os.path.getmtime(file1_path)
         file2_mtime = os.path.getmtime(file2_path)
         
-        # 데이터 분석
-        df1 = pd.read_csv(file1_path)
-        df2 = pd.read_csv(file2_path)
+        # 데이터 분석 (파일 형식에 맞게)
+        def load_file_safely(filepath):
+            file_ext = os.path.splitext(filepath.lower())[1]
+            if file_ext == '.csv':
+                return pd.read_csv(filepath)
+            else:
+                # Excel 파일인 경우 load_data 함수 사용
+                df = load_data(filepath)
+                # 인덱스가 Date인 경우 컬럼으로 복원
+                if df.index.name == 'Date':
+                    df = df.reset_index()
+                return df
+        
+        df1 = load_file_safely(file1_path)
+        df2 = load_file_safely(file2_path)
         
         if 'Date' in df1.columns and 'Date' in df2.columns:
             df1['Date'] = pd.to_datetime(df1['Date'])
@@ -8136,6 +9069,7 @@ def start_prediction_compatible():
     current_date = data.get('date')
     save_to_csv = data.get('save_to_csv', True)
     use_cache = data.get('use_cache', True)  # 기본값 True
+    volatile_mode = data.get('volatile_mode', False)  # 🔥 급등락 대응 모드
     
     if not filepath or not os.path.exists(filepath):
         return jsonify({'error': 'Invalid file path'}), 400
@@ -8149,10 +9083,11 @@ def start_prediction_compatible():
     logger.info(f"  📁 Data file: {filepath}")
     logger.info(f"  💾 Save to CSV: {save_to_csv}")
     logger.info(f"  🔄 Use cache: {use_cache}")
+    logger.info(f"  🔥 Volatile mode: {volatile_mode}")
     
-    # 호환성 유지 백그라운드 함수 실행 (캐시 우선 사용)
+    # 호환성 유지 백그라운드 함수 실행 (캐시 우선 사용 + 급등락 모드, 단일 예측만)
     thread = Thread(target=background_prediction_simple_compatible, 
-                   args=(filepath, current_date, save_to_csv, use_cache))
+                   args=(filepath, current_date, save_to_csv, use_cache, volatile_mode))
     thread.daemon = True
     thread.start()
     
@@ -8166,7 +9101,7 @@ def start_prediction_compatible():
 
 @app.route('/api/predict/status', methods=['GET'])
 def prediction_status():
-    """예측 상태 확인 API"""
+    """예측 상태 확인 API (남은 시간 추가)"""
     global prediction_state
     
     status = {
@@ -8174,6 +9109,14 @@ def prediction_status():
         'progress': prediction_state['prediction_progress'],
         'error': prediction_state['error']
     }
+    
+    # 예측 중인 경우 남은 시간 계산
+    if prediction_state['is_predicting'] and prediction_state['prediction_start_time']:
+        time_info = calculate_estimated_time_remaining(
+            prediction_state['prediction_start_time'], 
+            prediction_state['prediction_progress']
+        )
+        status.update(time_info)
     
     # 예측이 완료된 경우 날짜 정보도 반환
     if not prediction_state['is_predicting'] and prediction_state['current_date']:
@@ -9736,6 +10679,8 @@ def background_varmax_prediction(file_path, current_date, pred_days, use_cache=T
     global prediction_state
     
     try:
+        # 일관된 예측 결과를 위한 시드 고정
+        set_seed()
         # 현재 파일 상태 업데이트
         prediction_state['current_file'] = file_path
         
@@ -9804,6 +10749,7 @@ def background_varmax_prediction(file_path, current_date, pred_days, use_cache=T
         forecaster = VARMAXSemiMonthlyForecaster(file_path, pred_days=pred_days)
         prediction_state['varmax_is_predicting'] = True
         prediction_state['varmax_prediction_progress'] = 10
+        prediction_state['varmax_prediction_start_time'] = time.time()  # VARMAX 시작 시간 기록
         prediction_state['varmax_error'] = None
         
         # VARMAX 예측 수행
@@ -10012,7 +10958,7 @@ def create_varmax_visualizations(results):
         return {}
 
 def plot_varmax_moving_average_analysis(ma_results, sequence_start_date, save_prefix=None,
-                                       title_prefix="VARMAX Moving Average Analysis", file_path=None):
+                                        title_prefix="VARMAX Moving Average Analysis", file_path=None):
     """VARMAX 이동평균 분석 그래프"""
     try:
         logger.info(f"Creating VARMAX moving average analysis for {sequence_start_date}")
@@ -10178,7 +11124,7 @@ def varmax_semimonthly_predict():
 # 2) VARMAX 예측 상태 조회
 @app.route('/api/varmax/status', methods=['GET'])
 def varmax_prediction_status():
-    """VARMAX 예측 상태 확인 API"""
+    """VARMAX 예측 상태 확인 API (남은 시간 추가)"""
     global prediction_state
     
     is_predicting = prediction_state.get('varmax_is_predicting', False)
@@ -10192,6 +11138,14 @@ def varmax_prediction_status():
         'progress': progress,
         'error': error
     }
+    
+    # VARMAX 예측 중인 경우 남은 시간 계산
+    if is_predicting and prediction_state.get('varmax_prediction_start_time'):
+        time_info = calculate_estimated_time_remaining(
+            prediction_state['varmax_prediction_start_time'], 
+            progress
+        )
+        status.update(time_info)
     
     if not is_predicting and prediction_state.get('varmax_current_date'):
         status['current_date'] = prediction_state['varmax_current_date']
@@ -10585,6 +11539,175 @@ def get_varmax_decision():
         'case_1':      results['case_1'],
         'case_2':      results['case_2'],
     })
+
+@app.route('/api/market-status', methods=['GET'])
+def get_market_status():
+    """최근 30일간의 시장 가격 데이터를 카테고리별로 반환하는 API"""
+    try:
+        # 파일 경로 가져오기
+        file_path = request.args.get('file_path')
+        if not file_path:
+            return jsonify({
+                'success': False,
+                'error': 'File path is required'
+            }), 400
+        
+        # 파일 경로 정규화 (Windows 백슬래시 처리)
+        file_path = os.path.normpath(file_path)
+        logger.info(f"📊 [MARKET_STATUS] Normalized file path: {file_path}")
+        
+        # 파일 존재 여부 확인
+        if not os.path.exists(file_path):
+            logger.error(f"❌ [MARKET_STATUS] File not found: {file_path}")
+            return jsonify({
+                'success': False,
+                'error': f'File not found: {file_path}'
+            }), 400
+        
+        # 원본 데이터 직접 로드 (Date 컬럼 유지를 위해)
+        try:
+            df = pd.read_csv(file_path)
+            logger.info(f"📊 [MARKET_STATUS] Raw data loaded: {df.shape}")
+        except Exception as e:
+            logger.error(f"❌ [MARKET_STATUS] Failed to load CSV: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to load data file: {str(e)}'
+            }), 400
+        
+        if df is None or df.empty:
+            logger.error(f"❌ [MARKET_STATUS] No data available or empty dataframe")
+            return jsonify({
+                'success': False,
+                'error': 'No data available'
+            }), 400
+        
+        # 날짜 컬럼 확인 및 정렬
+        logger.info(f"📊 [MARKET_STATUS] Columns in dataframe: {list(df.columns)}")
+        if 'Date' not in df.columns:
+            logger.error(f"❌ [MARKET_STATUS] Date column not found. Available columns: {list(df.columns)}")
+            return jsonify({
+                'success': False,
+                'error': 'Date column not found in data'
+            }), 400
+        
+        # 날짜로 정렬
+        df = df.sort_values('Date')
+        
+        # 휴일 정보 로드
+        holidays = get_combined_holidays(df=df)
+        holiday_dates = set([h['date'] if isinstance(h, dict) else h for h in holidays])
+        
+        # 영업일만 필터링
+        def is_business_day(date_str):
+            date_obj = pd.to_datetime(date_str).date()
+            weekday = date_obj.weekday()  # 0=월요일, 6=일요일
+            return weekday < 5 and date_str not in holiday_dates  # 월~금 & 휴일 아님
+        
+        logger.info(f"📊 [MARKET_STATUS] Total rows before business day filtering: {len(df)}")
+        logger.info(f"📊 [MARKET_STATUS] Holiday dates count: {len(holiday_dates)}")
+        
+        business_days_df = df[df['Date'].apply(is_business_day)]
+        logger.info(f"📊 [MARKET_STATUS] Business days after filtering: {len(business_days_df)}")
+        
+        if business_days_df.empty:
+            logger.error(f"❌ [MARKET_STATUS] No business days found after filtering")
+            return jsonify({
+                'success': False,
+                'error': 'No business days found in data'
+            }), 400
+        
+        # 최근 30일 영업일 데이터 추출
+        recent_30_days = business_days_df.tail(30)
+
+        # 카테고리별 컬럼 분류 (실제 데이터 컬럼명에 맞게 수정)
+        categories = {
+            '원유 가격': [
+                'WTI', 'Brent', 'Dubai'
+            ],
+            '가솔린 가격': [
+                'Gasoline_92RON', 'Gasoline_95RON', 'Europe_M.G_10ppm', 'RBOB (NYMEX)_M1'
+            ],
+            '나프타 가격': [
+                'MOPJ', 'MOPAG', 'MOPS', 'Europe_CIF NWE'
+            ],
+            'LPG 가격': [
+                'C3_LPG', 'C4_LPG'
+            ],
+            '석유화학 제품 가격': [
+                'EL_CRF NEA', 'EL_CRF SEA', 'PL_FOB Korea', 'BZ_FOB Korea', 'BZ_FOB SEA', 'BZ_FOB US M1', 'BZ_FOB US M2', 
+                'TL_FOB Korea', 'TL_FOB US M1', 'TL_FOB US M2','MX_FOB Korea', 'PX_FOB Korea', 'SM_FOB Korea', 'RPG Value_FOB PG', 
+                'FO_HSFO 180 CST', 'MTBE_FOB Singapore'
+            ]
+        }
+        
+        # 실제 존재하는 컬럼만 필터링
+        available_columns = set(recent_30_days.columns)
+        filtered_categories = {}
+        
+        logger.info(f"📊 [MARKET_STATUS] Available columns: {sorted(available_columns)}")
+        
+        for category, columns in categories.items():
+            existing_columns = [col for col in columns if col in available_columns]
+            if existing_columns:
+                filtered_categories[category] = existing_columns
+                logger.info(f"📊 [MARKET_STATUS] Category '{category}': found {len(existing_columns)} columns: {existing_columns}")
+            else:
+                logger.warning(f"⚠️ [MARKET_STATUS] Category '{category}': no matching columns found from {columns}")
+        
+        if not filtered_categories:
+            logger.error(f"❌ [MARKET_STATUS] No categories found! Expected columns don't match available columns")
+            return jsonify({
+                'success': False,
+                'error': 'No matching columns found for market status categories',
+                'debug_info': {
+                    'available_columns': sorted(available_columns),
+                    'expected_categories': categories
+                }
+            }), 400
+        
+        # 카테고리별 데이터 구성
+        result = {
+            'success': True,
+            'date_range': {
+                'start_date': recent_30_days['Date'].iloc[0],
+                'end_date': recent_30_days['Date'].iloc[-1],
+                'total_days': len(recent_30_days)
+            },
+            'categories': {}
+        }
+        
+        for category, columns in filtered_categories.items():
+            category_data = {
+                'columns': columns,
+                'data': []
+            }
+            
+            for _, row in recent_30_days.iterrows():
+                data_point = {
+                    'date': row['Date'],
+                    'values': {}
+                }
+                
+                for col in columns:
+                    if pd.notna(row[col]):
+                        data_point['values'][col] = float(row[col])
+                    else:
+                        data_point['values'][col] = None
+                
+                category_data['data'].append(data_point)
+            
+            result['categories'][category] = category_data
+        
+        logger.info(f"✅ [MARKET_STATUS] Returned {len(recent_30_days)} business days data for {len(filtered_categories)} categories")
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"❌ [MARKET_STATUS] Error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Failed to get market status: {str(e)}'
+        }), 500
 
 # 메인 실행 부분 업데이트
 if __name__ == '__main__':
