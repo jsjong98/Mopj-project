@@ -47,32 +47,12 @@ const AccumulatedMetricsChart = ({ data }) => {
       }
     }
     
-    // 최적 구매 기간
-    let bestInterval = 0;
-    if (item.interval_scores) {
-      if (Array.isArray(item.interval_scores) && item.interval_scores.length > 0) {
-        // 배열인 경우
-        bestInterval = item.interval_scores[0].days || 0;
-      } else if (typeof item.interval_scores === 'object' && Object.keys(item.interval_scores).length > 0) {
-        // 객체인 경우 - 최고 점수 구간 찾기
-        const intervalScoresList = Object.values(item.interval_scores);
-        const bestIntervalData = intervalScoresList.reduce((best, current) => {
-          return (!best || (current && current.score > best.score)) ? current : best;
-        }, null);
-        
-        if (bestIntervalData && bestIntervalData.days) {
-          bestInterval = bestIntervalData.days;
-        }
-      }
-    }
-    
     return {
       date: item.date,
       minPrice,
       maxPrice,
       priceRange,
-      changePercent,
-      bestInterval
+      changePercent
     };
   });
 
@@ -114,11 +94,7 @@ const AccumulatedMetricsChart = ({ data }) => {
       formattedValue = `${value.toFixed(2)}%`;
       return [formattedValue, displayName];
     }
-    else if (name === 'bestInterval') {
-      displayName = '최적 구매 기간';
-      formattedValue = `${value}일`;
-      return [formattedValue, displayName];
-    }
+
     
     return [formattedValue.toFixed(2), displayName];
   };
@@ -177,15 +153,7 @@ const AccumulatedMetricsChart = ({ data }) => {
             yAxisId="percent"
             strokeDasharray="5 5"
           />
-          <Line 
-            type="monotone" 
-            dataKey="bestInterval" 
-            stroke="#3b82f6" 
-            strokeWidth={2} 
-            name="최적 구매 기간 (일)" 
-            dot={{ r: 4 }}
-            yAxisId="price"
-          />
+
         </LineChart>
       </ResponsiveContainer>
     </div>
