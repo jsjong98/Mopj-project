@@ -133,10 +133,7 @@ export const startPrediction = async (filepath, date = null, options = {}) => {
     const payload = { filepath };
     if (date) payload.date = date;
     
-    // 🔥 급등락 대응 모드 지원
-    if (options.volatileMode !== undefined) {
-      payload.volatile_mode = options.volatileMode;
-    }
+    // volatile_mode 제거됨 - 단순화를 위해 일반 모드만 사용
     
     const response = await fetch(`${API_BASE_URL}/predict`, {
       method: 'POST',
