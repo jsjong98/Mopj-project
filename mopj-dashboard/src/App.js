@@ -301,8 +301,7 @@ const App = () => {
   // 휴일 정보 상태
   const [holidays, setHolidays] = useState([]);
   
-  // 🔥 급등락 대응 모드 상태
-  const [volatileMode, setVolatileMode] = useState(false);
+
 
   // VARMAX 관련 상태 추가
   const [varmaxResults, setVarmaxResults] = useState(null);
@@ -648,8 +647,8 @@ const App = () => {
     setAttentionImage(null);
 
     try {
-      // 백엔드에는 필요한 데이터 기준일과 급등락 모드를 전달
-      const result = await startPrediction(fileInfo.filepath, requiredDataDate, { volatileMode });
+      // 백엔드에는 필요한 데이터 기준일을 전달
+      const result = await startPrediction(fileInfo.filepath, requiredDataDate);
       console.log('✅ [START] Prediction started:', result);
       
       if (result.error) {
@@ -2712,88 +2711,19 @@ const App = () => {
                   </div>
                 )}
                   
-                  {/* 🔥 급등락 대응 모드 설정 (단일 예측에서만 사용 가능) */}
-                  {activeTab === 'single' && (
-                    <div style={{
-                      margin: '1rem 0',
-                      padding: '1rem',
-                      backgroundColor: volatileMode ? '#fef3c7' : '#f3f4f6',
-                      borderRadius: '0.5rem',
-                      border: `1px solid ${volatileMode ? '#f59e0b' : '#d1d5db'}`
-                    }}>
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.75rem',
-                        marginBottom: '0.5rem'
-                      }}>
-                        <input
-                          type="checkbox"
-                          id="volatileMode"
-                          checked={volatileMode}
-                          onChange={(e) => setVolatileMode(e.target.checked)}
-                          style={{
-                            width: '18px',
-                            height: '18px',
-                            cursor: 'pointer'
-                          }}
-                        />
-                        <label 
-                          htmlFor="volatileMode" 
-                          style={{
-                            ...typography.helper,
-                            fontWeight: '600',
-                            color: volatileMode ? '#d97706' : '#374151',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.5rem'
-                          }}
-                        >
-                          🔥 급등락 대응 모드
-                          {volatileMode && <span style={{ color: '#dc2626' }}>● 활성화</span>}
-                        </label>
-                      </div>
-                      <div style={{
-                        ...typography.small,
-                        color: '#6b7280',
-                        lineHeight: '1.4'
-                      }}>
-                        {volatileMode ? (
-                          <>
-                            <strong style={{ color: '#d97706' }}>⚡ 급등락 상황에 특화된 새로운 하이퍼파라미터를 최적화합니다.</strong><br/>
-                            • 기존 캐시를 무시하고 시장 변동성에 특화된 모델을 학습합니다<br/>
-                            • 예측 정확도 향상을 위해 추가 연산 시간이 소요됩니다 (약 2-3배 소요)<br/>
-                            • 급격한 시장 변화가 예상될 때 사용을 권장합니다<br/>
-                            • <strong>날짜별로 별도 저장되어 덮어쓰기 걱정 없음</strong><br/>
-                            • <strong>일반 모드에서 가장 최신 급등락 하이퍼파라미터 자동 선택</strong>
-                          </>
-                        ) : (
-                          <>
-                            💡 전날 급등락이 있었다고 판단되는 경우 체크하세요.<br/>
-                            일반 모드는 기존 학습된 하이퍼파라미터를 사용하여 빠른 예측을 제공합니다.<br/>
-                            • 급등락 대응 하이퍼파라미터가 있으면 자동으로 우선 사용됩니다
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
+
                   
                   <div style={styles.buttonRow}>
                     <button
-                      style={{
-                        ...styles.predictionButton,
-                        backgroundColor: volatileMode ? '#f59e0b' : '#10b981',
-                        boxShadow: volatileMode ? '0 2px 4px rgba(245, 158, 11, 0.3)' : '0 1px 2px rgba(0, 0, 0, 0.05)'
-                      }}
+                      style={styles.predictionButton}
                       onClick={handleStartPrediction}
                       disabled={isPredicting || !selectedStartDate}
                     >
-                      {volatileMode ? '🔥' : <TrendingUp size={18} />}
+                      <TrendingUp size={18} />
                       {isPredicting 
-                        ? (volatileMode ? '급등락 대응 예측 중...' : '예측 중...') 
+                        ? '예측 중...' 
                         : selectedStartDate 
-                          ? (volatileMode ? `급등락 대응 예측 시작` : `${formatDate(selectedStartDate)}부터 예측 시작`)
+                          ? `${formatDate(selectedStartDate)}부터 예측 시작`
                           : '날짜 선택 후 예측'
                       }
                     </button>
