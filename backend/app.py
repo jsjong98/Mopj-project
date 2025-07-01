@@ -3067,19 +3067,36 @@ def find_compatible_hyperparameters(current_file_path, current_period):
     } 또는 None (호환 가능한 하이퍼파라미터가 없을 경우)
     """
     try:
-        # uploads 폴더의 다른 파일들을 확인
+        # uploads 폴더의 다른 파일들을 확인 (🔧 수정: xlsx 파일도 포함)
         upload_dir = Path(UPLOAD_FOLDER)
-        existing_files = [f for f in upload_dir.glob('*.csv') if str(f) != current_file_path]
+        existing_files = [f for f in upload_dir.glob('*.xlsx') if str(f) != current_file_path]
+        logger.info(f"🔍 [HYPERPARAMS_SEARCH] 탐색할 기존 파일 수: {len(existing_files)}")
+        for i, file in enumerate(existing_files):
+            logger.info(f"    {i+1}. {file.name}")
         
         for existing_file in existing_files:
             try:
-                # 데이터 확장 관계 확인
+                # 🔧 수정: 확장 관계 확인 + 단순 파일명 유사성 확인
                 extension_result = check_data_extension(str(existing_file), current_file_path)
+                is_extension = extension_result.get('is_extension', False)
                 
-                if extension_result.get('is_extension', False):
-                    logger.info(f"🔍 [HYPERPARAMS_SEARCH] 확장 관계 발견: {existing_file.name} -> {Path(current_file_path).name}")
-                    logger.info(f"    📈 Extension type: {extension_result.get('validation_details', {}).get('extension_type', 'Unknown')}")
-                    logger.info(f"    ➕ New rows: {extension_result.get('new_rows_count', 0)}")
+                # 📝 확장 관계가 인식되지 않는 경우 파일명 유사성으로 대체 확인
+                if not is_extension:
+                    existing_name = existing_file.stem.lower()
+                    current_name = Path(current_file_path).stem.lower()
+                    # 기본 이름이 같거나 하나가 다른 하나를 포함하는 경우
+                    if (existing_name in current_name or current_name in existing_name or 
+                        existing_name.replace('_', '') == current_name.replace('_', '')):
+                        is_extension = True
+                        logger.info(f"🔍 [HYPERPARAMS_SEARCH] 파일명 유사성으로 확장 관계 인정: {existing_file.name} -> {Path(current_file_path).name}")
+                
+                if is_extension:
+                    if extension_result.get('is_extension', False):
+                        logger.info(f"🔍 [HYPERPARAMS_SEARCH] 확장 관계 발견: {existing_file.name} -> {Path(current_file_path).name}")
+                        logger.info(f"    📈 Extension type: {extension_result.get('validation_details', {}).get('extension_type', 'Unknown')}")
+                        logger.info(f"    ➕ New rows: {extension_result.get('new_rows_count', 0)}")
+                    else:
+                        logger.info(f"🔍 [HYPERPARAMS_SEARCH] 파일명 유사성 기반 호환성 인정: {existing_file.name} -> {Path(current_file_path).name}")
                     
                     # 기존 파일의 하이퍼파라미터 캐시 확인
                     existing_cache_dirs = get_file_cache_dirs(str(existing_file))
@@ -3160,14 +3177,17 @@ def optimize_hyperparameters_semimonthly_kfold(train_data, input_size, target_co
             logger.info(f"    📁 Source: {compatible_hyperparams['source_file']}")
             logger.info(f"    📊 Extension info: {compatible_hyperparams['extension_info']}")
             
-            # 호환 가능한 하이퍼파라미터를 현재 파일에 복사하여 저장
+            # 🔧 수정: 캐시 저장에 실패해도 기존 하이퍼파라미터 반환
             try:
                 with open(cache_file, 'w') as f:
                     json.dump(compatible_hyperparams['hyperparams'], f, indent=2)
                 logger.info(f"💾 [{current_period}] 호환 하이퍼파라미터를 현재 파일에 저장했습니다.")
-                return compatible_hyperparams['hyperparams']
             except Exception as e:
-                logger.error(f"하이퍼파라미터 저장 오류: {str(e)}")
+                logger.warning(f"⚠️ 하이퍼파라미터 저장 실패, 하지만 기존 하이퍼파라미터를 사용합니다: {str(e)}")
+            
+            # 🔑 핵심: 저장 성공/실패 여부와 관계없이 기존 하이퍼파라미터 반환
+            logger.info(f"🚀 [{current_period}] 기존 하이퍼파라미터를 사용하여 최적화를 건너뜁니다.")
+            return compatible_hyperparams['hyperparams']
                 
         logger.info(f"🆕 [{current_period}] 동일 기간의 기존 하이퍼파라미터가 없습니다. 새로운 최적화를 진행합니다.")
     
@@ -4239,12 +4259,42 @@ def load_accumulated_predictions_from_csv(start_date, end_date=None, limit=None,
         if end_date and isinstance(end_date, str):
             end_date = pd.to_datetime(end_date)
         
-        # 저장된 예측 목록 조회 (최적화된 방식)
+        # 🔧 수정: 저장된 예측 목록 조회 (현재 파일 + 호환 가능한 파일들)
         all_predictions = []
         if file_path:
             try:
+                # 1. 현재 파일의 캐시
                 all_predictions = get_saved_predictions_list_for_file(file_path, limit=1000)
-                logger.info(f"🎯 [CACHE_LOAD] Found {len(all_predictions)} prediction files")
+                logger.info(f"🎯 [CACHE_LOAD] Current file: Found {len(all_predictions)} prediction files")
+                
+                # 2. 다른 호환 가능한 파일들의 캐시
+                upload_dir = Path(UPLOAD_FOLDER)
+                existing_files = [f for f in upload_dir.glob('*.xlsx') if str(f) != file_path]
+                
+                for existing_file in existing_files:
+                    try:
+                        # 확장 관계 또는 파일명 유사성 확인
+                        extension_result = check_data_extension(str(existing_file), file_path)
+                        is_extension = extension_result.get('is_extension', False)
+                        
+                        # 파일명 유사성 확인 (확장 관계 확인 실패 시)
+                        if not is_extension:
+                            existing_name = Path(existing_file).stem.lower()
+                            current_name = Path(file_path).stem.lower()
+                            if existing_name in current_name or current_name in existing_name:
+                                is_extension = True
+                        
+                        if is_extension:
+                            compatible_predictions = get_saved_predictions_list_for_file(str(existing_file), limit=500)
+                            all_predictions.extend(compatible_predictions)
+                            logger.info(f"🔗 [CACHE_LOAD] Compatible file {existing_file.name}: Found {len(compatible_predictions)} additional predictions")
+                            
+                    except Exception as file_error:
+                        logger.warning(f"⚠️ [CACHE_LOAD] Error checking file {existing_file.name}: {str(file_error)}")
+                        continue
+                
+                logger.info(f"🎯 [CACHE_LOAD] Total predictions found: {len(all_predictions)}")
+                
             except Exception as e:
                 logger.warning(f"⚠️ [CACHE_LOAD] Error in file-specific search: {str(e)}")
                 return []
@@ -7110,7 +7160,7 @@ def generate_predictions_with_attention_save(df, current_date, predict_window=23
 #######################################################################
 # 🔧 SyntaxError 수정 - check_existing_prediction 함수 (3987라인 근처)
 
-def check_existing_prediction(current_date):
+def check_existing_prediction(current_date, file_path=None):
     """
     파일별 디렉토리 구조에서 저장된 예측을 확인하고 불러오는 함수
     🎯 현재 파일의 디렉토리에서 우선 검색
@@ -7139,7 +7189,8 @@ def check_existing_prediction(current_date):
         
         # 🎯 1단계: 현재 파일의 캐시 디렉토리에서 정확한 날짜 매치로 캐시 찾기
         try:
-            cache_dirs = get_file_cache_dirs()
+            # 🔧 수정: 파일 경로를 명시적으로 전달
+            cache_dirs = get_file_cache_dirs(file_path)
             file_predictions_dir = cache_dirs['predictions']
             
             logger.info(f"  📁 Cache directory: {cache_dirs['root']}")
@@ -7209,33 +7260,53 @@ def check_existing_prediction(current_date):
         else:
             logger.warning(f"❌ Predictions directory does not exist: {file_predictions_dir}")
         
-        # 🎯 2단계: 빠른 인덱스 기반 검색 (다른 파일 캐시)
-        current_file_path = prediction_state.get('current_file', None)
+        # 🎯 2단계: 다른 파일들의 캐시에서 호환 가능한 예측 찾기
+        current_file_path = file_path or prediction_state.get('current_file', None)
         if current_file_path:
-            # 캐시 인덱스가 비어있으면 빌드
-            if not _cache_lookup_index:
-                logger.info("🔄 Building cache lookup index...")
-                build_cache_lookup_index()
+            # 🔧 수정: 모든 기존 파일의 캐시 디렉토리 탐색
+            upload_dir = Path(UPLOAD_FOLDER)
+            existing_files = [f for f in upload_dir.glob('*.xlsx') if str(f) != current_file_path]
             
-            # 파일 해시 계산 (최적화된 캐싱 버전)
-            current_file_hash = get_data_content_hash(current_file_path)
+            logger.info(f"🔍 [PREDICTION_CACHE] 다른 파일들의 캐시 탐색: {len(existing_files)}개 파일")
             
-            if current_file_hash:
-                cache_key = f"{current_file_hash}_{current_semimonthly}"
-                
-                if cache_key in _cache_lookup_index:
-                    cache_info = _cache_lookup_index[cache_key]
-                    predictions_dir = Path(cache_info['predictions_dir'])
+            for existing_file in existing_files:
+                try:
+                    # 기존 파일의 캐시 디렉토리 확인
+                    existing_cache_dirs = get_file_cache_dirs(str(existing_file))
+                    existing_predictions_dir = existing_cache_dirs['predictions']
                     
-                    # 메타 파일에서 예측 날짜 추출
-                    meta_file_path = cache_info['meta_file']
-                    cached_date_str = Path(meta_file_path).stem.replace('prediction_start_', '').replace('_meta', '')
-                    cached_prediction_date = pd.to_datetime(cached_date_str, format='%Y%m%d')
+                    if existing_predictions_dir.exists():
+                        # 동일한 반월 기간의 예측 파일 찾기
+                        pattern = f"prediction_start_*_meta.json"
+                        meta_files = list(existing_predictions_dir.glob(pattern))
+                        
+                        logger.info(f"    📁 {existing_file.name}: {len(meta_files)}개 예측 파일")
+                        
+                        for meta_file in meta_files:
+                            try:
+                                with open(meta_file, 'r', encoding='utf-8') as f:
+                                    meta_data = json.load(f)
+                                
+                                # 예측 시작일로부터 반월 기간 추출
+                                cached_date_str = meta_file.stem.replace('prediction_start_', '').replace('_meta', '')
+                                cached_prediction_date = pd.to_datetime(cached_date_str, format='%Y%m%d')
+                                cached_semimonthly = get_semimonthly_period(cached_prediction_date)
+                                
+                                if cached_semimonthly == current_semimonthly:
+                                    logger.info(f"    🎯 호환 가능한 예측 발견! {existing_file.name} -> {cached_prediction_date.strftime('%Y-%m-%d')}")
+                                    logger.info(f"    📅 반월 기간 일치: {current_semimonthly}")
+                                    
+                                    return load_prediction_with_attention_from_csv_in_dir(cached_prediction_date, existing_predictions_dir)
+                                    
+                            except Exception as e:
+                                logger.debug(f"    ⚠️ 메타 파일 읽기 실패 {meta_file}: {str(e)}")
+                                continue
+                except Exception as e:
+                    logger.debug(f"    ⚠️ 캐시 디렉토리 접근 실패 {existing_file.name}: {str(e)}")
+                    continue
                     
-                    logger.info(f"🎯 Found compatible cache via index! ({cached_prediction_date.strftime('%Y-%m-%d')})")
-                    return load_prediction_with_attention_from_csv_in_dir(cached_prediction_date, predictions_dir)
-                else:
-                    logger.info(f"❌ No cache found in index for key: {cache_key[:20]}...")
+            logger.info("❌ 다른 파일들의 캐시에서도 호환 가능한 예측을 찾지 못했습니다")
+            
         logger.info("❌ No compatible prediction cache found")
         return None
         
@@ -8132,7 +8203,7 @@ def background_prediction_simple_compatible(file_path, current_date, save_to_csv
             prediction_state['prediction_progress'] = 30
             
             try:
-                cached_result = check_existing_prediction(current_date)
+                cached_result = check_existing_prediction(current_date, file_path)
                 logger.info(f"  📋 Cache check result: {cached_result is not None}")
                 if cached_result:
                     logger.info(f"  📋 Cache success status: {cached_result.get('success', False)}")
