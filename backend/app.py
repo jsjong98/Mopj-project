@@ -40,6 +40,7 @@ import math
 import logging
 import glob
 import time
+import xlwings as xw
 
 # 로깅 설정
 logging.basicConfig(
@@ -1521,7 +1522,11 @@ def clean_text_values_advanced(data):
         if x_str.upper() in ['NOP', 'NO PUBLICATION', 'NO PUB']:
             return np.nan
             
-        # 3. '*' 포함된 계산식 처리
+        # 3. TBA (To Be Announced) 값 처리 - 특별 마킹하여 나중에 전날값으로 대체
+        if x_str.upper() in ['TBA', 'TO BE ANNOUNCED']:
+            return 'TBA_REPLACE'
+            
+        # 4. '*' 포함된 계산식 처리
         if '*' in x_str:
             try:
                 # 계산식 실행
@@ -1529,7 +1534,7 @@ def clean_text_values_advanced(data):
             except:
                 return x
         
-        # 4. 숫자로 변환 시도
+        # 5. 숫자로 변환 시도
         try:
             return float(x_str)
         except:
@@ -1577,6 +1582,54 @@ def clean_text_values_advanced(data):
         
         print(f"\n=== {mopj_col} 변수 처리 후 데이터 크기 ===")
         print(f"행 수: {len(cleaned_data)}")
+    
+    # 🔧 TBA 값을 전날 값으로 대체
+    tba_replacements = 0
+    if 'Date' in cleaned_data.columns:
+        # 날짜순으로 정렬 (중요: 전날 값 참조를 위해)
+        cleaned_data = cleaned_data.sort_values('Date').reset_index(drop=True)
+        
+        for column in cleaned_data.columns:
+            if column != 'Date':  # Date 열 제외
+                # TBA_REPLACE 마킹된 값들 찾기
+                tba_mask = cleaned_data[column] == 'TBA_REPLACE'
+                tba_indices = cleaned_data[tba_mask].index.tolist()
+                
+                if tba_indices:
+                    print(f"\n[TBA 처리] 열 '{column}'에서 {len(tba_indices)}개의 TBA 값 발견")
+                    
+                    for idx in tba_indices:
+                        # 🔧 개선: 가장 최근의 유효한 값 찾기 (연속 TBA 처리)
+                        replacement_value = None
+                        source_description = ""
+                        
+                        # 이전 행들을 거슬러 올라가면서 유효한 값 찾기
+                        for prev_idx in range(idx-1, -1, -1):
+                            candidate_value = cleaned_data.loc[prev_idx, column]
+                            try:
+                                if pd.notna(candidate_value) and candidate_value != 'TBA_REPLACE':
+                                    replacement_value = float(candidate_value)
+                                    days_back = idx - prev_idx
+                                    if days_back == 1:
+                                        source_description = "전날 값"
+                                    else:
+                                        source_description = f"{days_back}일 전 값"
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        # 값 대체 수행
+                        if replacement_value is not None:
+                            cleaned_data.loc[idx, column] = replacement_value
+                            tba_replacements += 1
+                            print(f"  - 행 {idx+1}: TBA → {replacement_value} ({source_description})")
+                        else:
+                            # 유효한 이전 값을 찾을 수 없는 경우
+                            cleaned_data.loc[idx, column] = np.nan
+                            print(f"  - 행 {idx+1}: TBA → NaN (유효한 이전 값 없음)")
+    
+    if tba_replacements > 0:
+        print(f"\n✅ 총 {tba_replacements}개의 TBA 값을 전날 값으로 대체했습니다.")
     
     return cleaned_data
 
@@ -1947,6 +2000,250 @@ def process_excel_data_complete(file_path, sheet_name='29 Nov 2010 till todate',
         logger.error(traceback.format_exc())
         return None
 
+# xlwings 대안 로더 (보안프로그램이 파일을 잠그는 경우 사용)
+try:
+    import xlwings as xw
+    XLWINGS_AVAILABLE = True
+    logger.info("✅ xlwings library available - Excel security bypass enabled")
+except ImportError:
+    XLWINGS_AVAILABLE = False
+    logger.warning("⚠️ xlwings not available - falling back to pandas only")
+
+def load_data_with_xlwings(file_path, model_type=None):
+    """
+    xlwings를 사용하여 보안프로그램이 파일을 잠그는 상황에서도 안정적으로 Excel 파일을 읽는 함수
+    
+    Args:
+        file_path (str): Excel 파일 경로
+        model_type (str): 모델 타입 ('lstm', 'varmax', None)
+    
+    Returns:
+        pd.DataFrame: 전처리된 데이터프레임
+    """
+    if not XLWINGS_AVAILABLE:
+        raise ImportError("xlwings is not available. Please install it with: pip install xlwings")
+    
+    logger.info(f"🔓 [XLWINGS] Loading Excel file with security bypass: {os.path.basename(file_path)}")
+    
+    app = None
+    wb = None
+    
+    try:
+        # Excel 애플리케이션을 백그라운드에서 시작
+        app = xw.App(visible=False, add_book=False)
+        app.display_alerts = False  # 경고창 비활성화
+        app.screen_updating = False  # 화면 업데이트 비활성화 (성능 향상)
+        
+        logger.info(f"📱 [XLWINGS] Excel app started (PID: {app.pid})")
+        
+        # Excel 파일 열기
+        wb = app.books.open(file_path, read_only=True, update_links=False)
+        logger.info(f"📖 [XLWINGS] Workbook opened: {wb.name}")
+        
+        # 적절한 시트 찾기
+        sheet_names = [sheet.name for sheet in wb.sheets]
+        logger.info(f"📋 [XLWINGS] Available sheets: {sheet_names}")
+        
+        # 기본 시트명 또는 첫 번째 시트 사용
+        target_sheet_name = '29 Nov 2010 till todate'
+        if target_sheet_name in sheet_names:
+            sheet = wb.sheets[target_sheet_name]
+            logger.info(f"🎯 [XLWINGS] Using target sheet: {target_sheet_name}")
+        else:
+            sheet = wb.sheets[0]  # 첫 번째 시트 사용
+            logger.info(f"🎯 [XLWINGS] Using first sheet: {sheet.name}")
+        
+        # 사용된 범위 확인
+        used_range = sheet.used_range
+        if used_range is None:
+            raise ValueError("Sheet appears to be empty")
+        
+        logger.info(f"📏 [XLWINGS] Used range: {used_range.address}")
+        
+        # 데이터를 DataFrame으로 읽기 (헤더 포함)
+        # xlwings의 expand='table' 옵션으로 자동으로 전체 데이터 범위 감지
+        df = sheet['A1'].options(pd.DataFrame, index=False, expand='table').value
+        
+        logger.info(f"📊 [XLWINGS] Raw data loaded: {df.shape}")
+        logger.info(f"📋 [XLWINGS] Columns: {list(df.columns)}")
+        
+        # 데이터 검증
+        if df is None or df.empty:
+            raise ValueError("No data found in the Excel file")
+        
+        # Date 컬럼 확인 및 처리
+        if 'Date' not in df.columns:
+            # 첫 번째 컬럼이 날짜일 가능성 확인
+            first_col = df.columns[0]
+            if 'date' in first_col.lower() or df[first_col].dtype == 'datetime64[ns]':
+                df = df.rename(columns={first_col: 'Date'})
+                logger.info(f"🔄 [XLWINGS] Renamed '{first_col}' to 'Date'")
+            else:
+                raise ValueError("Date column not found in the data")
+        
+        # Date 컬럼을 datetime으로 변환
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        
+        logger.info(f"📅 [XLWINGS] Date range: {df.index.min()} to {df.index.max()}")
+        
+        # 모델 타입별 데이터 필터링 (기존 load_data와 동일)
+        if model_type == 'lstm':
+            cutoff_date = pd.to_datetime('2022-01-01')
+            original_shape = df.shape
+            df = df[df.index >= cutoff_date]
+            logger.info(f"🔍 [XLWINGS] LSTM filter: {original_shape[0]} -> {df.shape[0]} records")
+            
+            if df.empty:
+                raise ValueError("No data available after 2022-01-01 filter for LSTM model")
+        
+        # 기본 데이터 정제
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        logger.info(f"✅ [XLWINGS] Data loaded successfully: {df.shape}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ [XLWINGS] Error loading file: {str(e)}")
+        raise e
+        
+    finally:
+        # 리소스 정리
+        try:
+            if wb is not None:
+                wb.close()
+                logger.info("📖 [XLWINGS] Workbook closed")
+        except:
+            pass
+        
+        try:
+            if app is not None:
+                app.quit()
+                logger.info("📱 [XLWINGS] Excel app closed")
+        except:
+            pass
+
+def load_data_safe_holidays(file_path):
+    """
+    휴일 파일 전용 xlwings 로딩 함수 - 보안프로그램 우회
+    
+    Args:
+        file_path (str): 휴일 Excel 파일 경로
+    
+    Returns:
+        pd.DataFrame: 휴일 데이터프레임 (date, description 컬럼)
+    """
+    if not XLWINGS_AVAILABLE:
+        raise ImportError("xlwings is not available for holiday file loading")
+    
+    logger.info(f"🔓 [HOLIDAYS_XLWINGS] Loading holiday file with security bypass: {os.path.basename(file_path)}")
+    
+    app = None
+    wb = None
+    
+    try:
+        # Excel 애플리케이션을 백그라운드에서 시작
+        app = xw.App(visible=False, add_book=False)
+        app.display_alerts = False
+        app.screen_updating = False
+        
+        logger.info(f"📱 [HOLIDAYS_XLWINGS] Excel app started for holidays")
+        
+        # Excel 파일 열기
+        wb = app.books.open(file_path, read_only=True, update_links=False)
+        logger.info(f"📖 [HOLIDAYS_XLWINGS] Holiday workbook opened: {wb.name}")
+        
+        # 첫 번째 시트 사용 (휴일 파일은 보통 단순 구조)
+        sheet = wb.sheets[0]
+        logger.info(f"🎯 [HOLIDAYS_XLWINGS] Using sheet: {sheet.name}")
+        
+        # 사용된 범위 확인
+        used_range = sheet.used_range
+        if used_range is None:
+            raise ValueError("Holiday sheet appears to be empty")
+        
+        logger.info(f"📏 [HOLIDAYS_XLWINGS] Used range: {used_range.address}")
+        
+        # 데이터를 DataFrame으로 읽기 (헤더 포함)
+        df = sheet['A1'].options(pd.DataFrame, index=False, expand='table').value
+        
+        logger.info(f"📊 [HOLIDAYS_XLWINGS] Holiday data loaded: {df.shape}")
+        logger.info(f"📋 [HOLIDAYS_XLWINGS] Columns: {list(df.columns)}")
+        
+        # 데이터 검증
+        if df is None or df.empty:
+            raise ValueError("No holiday data found in the Excel file")
+        
+        # 컬럼명 정규화 (case-insensitive)
+        df.columns = df.columns.str.lower()
+        
+        # 필수 컬럼 확인
+        if 'date' not in df.columns:
+            # 첫 번째 컬럼을 날짜로 가정
+            first_col = df.columns[0]
+            df = df.rename(columns={first_col: 'date'})
+            logger.info(f"🔄 [HOLIDAYS_XLWINGS] Renamed '{first_col}' to 'date'")
+        
+        # description 컬럼이 없으면 추가
+        if 'description' not in df.columns:
+            df['description'] = 'Holiday'
+            logger.info(f"➕ [HOLIDAYS_XLWINGS] Added default 'description' column")
+        
+        logger.info(f"✅ [HOLIDAYS_XLWINGS] Holiday data loaded successfully: {len(df)} holidays")
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ [HOLIDAYS_XLWINGS] Error loading holiday file: {str(e)}")
+        raise e
+        
+    finally:
+        # 리소스 정리
+        try:
+            if wb is not None:
+                wb.close()
+                logger.info("📖 [HOLIDAYS_XLWINGS] Holiday workbook closed")
+        except:
+            pass
+        
+        try:
+            if app is not None:
+                app.quit()
+                logger.info("📱 [HOLIDAYS_XLWINGS] Excel app closed")
+        except:
+            pass
+
+def load_data_safe(file_path, model_type=None, use_cache=True, use_xlwings_fallback=True):
+    """
+    안전한 데이터 로딩 함수 - 보안 문제 시 xlwings로 자동 전환
+    
+    Args:
+        file_path (str): 데이터 파일 경로
+        model_type (str): 모델 타입 ('lstm', 'varmax', None)
+        use_cache (bool): 메모리 캐시 사용 여부
+        use_xlwings_fallback (bool): 실패 시 xlwings 사용 여부
+    
+    Returns:
+        pd.DataFrame: 전처리된 데이터프레임
+    """
+    try:
+        # 먼저 기본 load_data 함수 시도
+        return load_data(file_path, model_type, use_cache)
+        
+    except (PermissionError, OSError, pd.errors.ExcelFileError) as e:
+        # 파일 접근 오류 시 xlwings로 대체 시도
+        if use_xlwings_fallback and XLWINGS_AVAILABLE and file_path.endswith(('.xlsx', '.xls')):
+            logger.warning(f"⚠️ [SECURITY_BYPASS] Standard loading failed: {str(e)}")
+            logger.info("🔓 [SECURITY_BYPASS] Attempting xlwings bypass...")
+            
+            try:
+                return load_data_with_xlwings(file_path, model_type)
+            except Exception as xlwings_error:
+                logger.error(f"❌ [SECURITY_BYPASS] xlwings also failed: {str(xlwings_error)}")
+                raise e  # 원래 오류를 다시 발생
+        else:
+            raise e
+
 # 데이터 로딩 및 전처리 함수
 def load_data(file_path, model_type=None, use_cache=True):
     """
@@ -2220,9 +2517,14 @@ def load_holidays_from_file(filepath=None):
         return set(default_holidays)
     
     try:
-        # 파일 로드
+        # 파일 로드 - 보안 문제를 고려한 안전한 로딩 사용
         if ext.lower() == '.xlsx':
-            df = pd.read_excel(filepath)
+            # Excel 파일의 경우 xlwings 보안 우회 기능 사용
+            try:
+                df = load_data_safe_holidays(filepath)
+            except Exception as e:
+                logger.warning(f"⚠️ [HOLIDAYS] xlwings loading failed, using pandas: {str(e)}")
+                df = pd.read_excel(filepath)
         else:
             df = pd.read_csv(filepath)
         
@@ -2334,6 +2636,88 @@ def update_holidays(filepath=None, df=None):
     global holidays
     holidays = get_combined_holidays(df, filepath)
     return holidays
+
+def update_holidays_safe(filepath=None, df=None):
+    """
+    안전한 휴일 정보 업데이트 함수 - xlwings 보안 우회 기능 포함
+    
+    Args:
+        filepath (str): 휴일 파일 경로
+        df (pd.DataFrame): 데이터 분석용 데이터프레임
+    
+    Returns:
+        set: 업데이트된 휴일 날짜 집합
+    """
+    global holidays
+    
+    try:
+        # 기본 방식으로 휴일 로드 시도
+        holidays = get_combined_holidays(df, filepath)
+        logger.info(f"✅ [HOLIDAY_SAFE] Standard holiday loading successful: {len(holidays)} holidays")
+        return holidays
+        
+    except (PermissionError, OSError, pd.errors.ExcelFileError) as e:
+        # 파일 접근 오류 시 xlwings로 대체 시도 (Excel 파일만)
+        if filepath and filepath.endswith(('.xlsx', '.xls')) and XLWINGS_AVAILABLE:
+            logger.warning(f"⚠️ [HOLIDAY_BYPASS] Standard holiday loading failed: {str(e)}")
+            logger.info("🔓 [HOLIDAY_BYPASS] Attempting xlwings bypass for holiday file...")
+            
+            try:
+                # xlwings로 휴일 파일 로드
+                file_holidays = load_holidays_from_file_safe(filepath)
+                
+                # 데이터에서 빈 평일 감지 (기존 방식)
+                data_holidays = set()
+                if df is not None:
+                    data_holidays = detect_missing_weekdays_as_holidays(df)
+                
+                # 두 세트 결합
+                holidays = file_holidays.union(data_holidays)
+                
+                logger.info(f"✅ [HOLIDAY_BYPASS] xlwings holiday loading successful: {len(file_holidays)} from file + {len(data_holidays)} from data = {len(holidays)} total")
+                return holidays
+                
+            except Exception as xlwings_error:
+                logger.error(f"❌ [HOLIDAY_BYPASS] xlwings holiday loading also failed: {str(xlwings_error)}")
+                # 기본 휴일로 폴백
+                logger.info("🔄 [HOLIDAY_FALLBACK] Using default holidays")
+                holidays = load_holidays_from_file()  # 기본 파일에서 로드
+                return holidays
+        else:
+            # xlwings를 사용할 수 없으면 기본 휴일로 폴백
+            logger.warning(f"⚠️ [HOLIDAY_FALLBACK] Cannot use xlwings, using default holidays: {str(e)}")
+            holidays = load_holidays_from_file()  # 기본 파일에서 로드
+            return holidays
+
+def load_holidays_from_file_safe(filepath):
+    """
+    xlwings를 사용한 안전한 휴일 파일 로딩
+    
+    Args:
+        filepath (str): 휴일 파일 경로
+    
+    Returns:
+        set: 휴일 날짜 집합
+    """
+    try:
+        # xlwings로 휴일 파일 로드
+        df = load_data_safe_holidays(filepath)
+        
+        # 날짜 형식 표준화
+        holidays_set = set()
+        for date_str in df['date']:
+            try:
+                date = pd.to_datetime(date_str)
+                holidays_set.add(date.strftime('%Y-%m-%d'))
+            except:
+                logger.warning(f"Invalid date format in xlwings holiday data: {date_str}")
+        
+        logger.info(f"🔓 [HOLIDAY_XLWINGS] Loaded {len(holidays_set)} holidays with xlwings")
+        return holidays_set
+        
+    except Exception as e:
+        logger.error(f"❌ [HOLIDAY_XLWINGS] xlwings holiday loading failed: {str(e)}")
+        raise e
 
 # TimeSeriesDataset 및 평가 메트릭스
 class TimeSeriesDataset(Dataset):
@@ -9201,47 +9585,6 @@ def upload_file():
                         
                     response_data['filepath'] = final_filepath
                     response_data['filename'] = final_filename
-            
-            else:
-                # 새 파일인 경우 정식 파일명으로 변경 (원본 확장자 유지)
-                try:
-                    content_hash = get_data_content_hash(temp_filepath)
-                    final_filename = f"data_{content_hash}{file_ext}" if content_hash else temp_filename
-                except Exception as hash_error:
-                    logger.warning(f"⚠️ Hash calculation failed, using timestamp-based filename: {str(hash_error)}")
-                    final_filename = temp_filename  # 해시 실패 시 임시 파일명 유지
-                
-                final_filepath = os.path.join(app.config['UPLOAD_FOLDER'], final_filename)
-                
-                if temp_filepath != final_filepath:
-                    # 🔧 강화된 파일 이동 로직 (Excel 파일 락 해제 대기)
-                    moved_successfully = False
-                    for attempt in range(3):  # 최대 3번 시도
-                        try:
-                            # Excel 파일 읽기 후 파일 락 해제를 위한 충분한 대기
-                            import gc
-                            gc.collect()  # 가비지 컬렉션으로 파일 핸들 해제
-                            time.sleep(0.5 + attempt * 0.5)  # 점진적으로 대기 시간 증가
-                            
-                            shutil.move(temp_filepath, final_filepath)
-                            logger.info(f"📝 [UPLOAD] File renamed: {final_filename} (attempt {attempt + 1})")
-                            moved_successfully = True
-                            break
-                        except OSError as move_error:
-                            logger.warning(f"⚠️ File move attempt {attempt + 1} failed: {str(move_error)}")
-                            if attempt == 2:  # 마지막 시도
-                                logger.warning(f"⚠️ All move attempts failed, keeping original filename: {str(move_error)}")
-                                final_filepath = temp_filepath
-                                final_filename = temp_filename
-                    
-                    if not moved_successfully:
-                        final_filepath = temp_filepath
-                        final_filename = temp_filename
-                else:
-                    logger.info(f"📝 [UPLOAD] File already has correct name: {final_filename}")
-                    
-                response_data['filepath'] = final_filepath
-                response_data['filename'] = final_filename
                 response_data['cache_info']['message'] = "새로운 데이터입니다. 모델별로 적절한 데이터 범위를 사용하여 예측합니다."
             
             # 🔑 업로드된 파일 경로를 전역 상태에 저장
@@ -9338,8 +9681,9 @@ def upload_holidays():
             # 파일 저장
             file.save(filepath)
             
-            # 휴일 정보 업데이트
-            new_holidays = update_holidays(filepath)
+            # 휴일 정보 업데이트 - 보안 우회 기능 사용
+            logger.info(f"🏖️ [HOLIDAY_UPLOAD] Processing uploaded holiday file: {filename}")
+            new_holidays = update_holidays_safe(filepath)
             
             # 원본 파일을 holidays 디렉토리로 복사
             holidays_dir = 'holidays'
@@ -9380,17 +9724,28 @@ def upload_holidays():
 
 @app.route('/api/holidays/reload', methods=['POST'])
 def reload_holidays():
-    """휴일 목록 재로드 API"""
-    filepath = request.json.get('filepath')
-    
-    # 기본 파일 또는 지정된 파일로부터 재로드
-    new_holidays = update_holidays(filepath)
-    
-    return jsonify({
-        'success': True,
-        'message': f'Successfully reloaded {len(new_holidays)} holidays',
-        'holidays': list(new_holidays)
-    })
+    """휴일 목록 재로드 API - 보안 우회 기능 포함"""
+    try:
+        filepath = request.json.get('filepath') if request.json else None
+        
+        logger.info(f"🔄 [HOLIDAY_RELOAD] Reloading holidays from: {filepath or 'default file'}")
+        
+        # 보안 우회 기능을 포함한 안전한 재로드
+        new_holidays = update_holidays_safe(filepath)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully reloaded {len(new_holidays)} holidays',
+            'holidays': list(new_holidays),
+            'security_bypass_used': XLWINGS_AVAILABLE
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [HOLIDAY_RELOAD] Error reloading holidays: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Failed to reload holidays: {str(e)}'
+        }), 500
 
 @app.route('/api/file/metadata', methods=['GET'])
 def get_file_metadata():
@@ -12413,7 +12768,9 @@ def get_market_status():
                 'error': 'File path is required'
             }), 400
         
-        # 파일 경로 정규화 (Windows 백슬래시 처리)
+        # URL 디코딩 및 파일 경로 정규화 (Windows 백슬래시 처리)
+        import urllib.parse
+        file_path = urllib.parse.unquote(file_path)  # URL 디코딩
         file_path = os.path.normpath(file_path)
         logger.info(f"📊 [MARKET_STATUS] Normalized file path: {file_path}")
         
@@ -12425,12 +12782,27 @@ def get_market_status():
                 'error': f'File not found: {file_path}'
             }), 400
         
-        # 원본 데이터 직접 로드 (Date 컬럼 유지를 위해)
+        # 원본 데이터 직접 로드 (Date 컬럼 유지를 위해) - Excel/CSV 파일 모두 지원
         try:
-            df = pd.read_csv(file_path)
-            logger.info(f"📊 [MARKET_STATUS] Raw data loaded: {df.shape}")
+            file_ext = os.path.splitext(file_path.lower())[1]
+            if file_ext == '.csv':
+                df = pd.read_csv(file_path)
+                logger.info(f"📊 [MARKET_STATUS] CSV data loaded: {df.shape}")
+            elif file_ext in ['.xlsx', '.xls']:
+                # Excel 파일의 경우 보안 문제를 고려한 안전한 로딩 사용
+                df = load_data_safe(file_path, use_cache=True, use_xlwings_fallback=True)
+                # 인덱스가 Date인 경우 컬럼으로 복원
+                if df.index.name == 'Date':
+                    df = df.reset_index()
+                logger.info(f"📊 [MARKET_STATUS] Excel data loaded with security bypass: {df.shape}")
+            else:
+                logger.error(f"❌ [MARKET_STATUS] Unsupported file format: {file_ext}")
+                return jsonify({
+                    'success': False,
+                    'error': f'Unsupported file format: {file_ext}. Only CSV and Excel files are supported.'
+                }), 400
         except Exception as e:
-            logger.error(f"❌ [MARKET_STATUS] Failed to load CSV: {str(e)}")
+            logger.error(f"❌ [MARKET_STATUS] Failed to load data file: {str(e)}")
             return jsonify({
                 'success': False,
                 'error': f'Failed to load data file: {str(e)}'
