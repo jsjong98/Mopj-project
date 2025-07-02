@@ -222,7 +222,7 @@ const AccumulatedResultsTable = ({ data, currentDate, onSelectDate, onViewInSing
       <table style={styles.table}>
         <thead style={styles.tableHeader}>
           <tr>
-            <th style={styles.th}>기준 날짜</th>
+            <th style={styles.th}>예측 시작일</th>
             <th style={styles.th}>가격 범위</th>
             <th style={styles.th}>가격 경향</th>
             <th style={styles.th}>최적 구매 기간</th>
@@ -256,10 +256,10 @@ const AccumulatedResultsTable = ({ data, currentDate, onSelectDate, onViewInSing
                     <Calendar size={14} style={styles.dateIcon} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                       <div style={{ ...typography.helper, fontWeight: '500' }}>
-                        📊 데이터 기준일: {item.date}
+                        🚀 예측 시작일: {predictionStartDate}
                       </div>
                       <div style={{ ...typography.small, color: '#6b7280' }}>
-                        🚀 예측 시작일: {predictionStartDate}
+                        📊 데이터 기준일: {item.date}
                       </div>
                     </div>
                   </div>
