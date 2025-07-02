@@ -1338,6 +1338,20 @@ const App = () => {
     }
   };
 
+  // 데이터 기준일을 예측 시작일로 변환하는 함수
+  const calculatePredictionStartDate = (dataEndDate) => {
+    if (!dataEndDate) return null;
+    const date = new Date(dataEndDate);
+    date.setDate(date.getDate() + 1);
+    
+    // 주말이면 다음 월요일까지 이동
+    while (date.getDay() === 0 || date.getDay() === 6) {
+      date.setDate(date.getDate() + 1);
+    }
+    
+    return date.toISOString().split('T')[0];
+  };
+
   // 누적 예측 날짜 선택 시
   const handleAccumulatedDateSelect = (date) => {
     console.log(`🎯 [SELECT] Date selected: ${date}`);
@@ -3431,7 +3445,7 @@ const App = () => {
                       <div style={styles.card}>
                         <h2 style={styles.cardTitle}>
                           <Activity size={18} style={styles.iconStyle} />
-                          날짜별 예측 추이
+                          예측 시작일별 가격 범위 및 변동성
                         </h2>
                         <AccumulatedMetricsChart 
                           data={accumulatedResults}
@@ -3462,7 +3476,7 @@ const App = () => {
                         }}>
                           <h2 style={styles.cardTitle}>
                             <TrendingUp size={18} style={styles.iconStyle} />
-                            선택 날짜 ({selectedAccumulatedDate || '없음'}) 예측 결과
+                            예측 시작일 ({calculatePredictionStartDate(selectedAccumulatedDate) || '없음'}) 예측 결과
                             <span style={{ ...typography.small, color: '#6b7280', marginLeft: '0.5rem' }}>
                               (데이터: {selectedDatePredictions?.length || 0}개, 구간: {selectedDateIntervalScores?.length || 0}개)
                               {selectedDatePredictions?.length > 0 && (
@@ -3506,7 +3520,7 @@ const App = () => {
                             marginBottom: '1rem'
                           }}>
                             <p style={{ ...typography.helper, margin: 0, color: '#92400e' }}>
-                              📋 {selectedAccumulatedDate} 날짜를 선택했지만 예측 데이터가 로드되지 않았습니다. 
+                              📋 예측 시작일 {calculatePredictionStartDate(selectedAccumulatedDate)} (데이터 기준일: {selectedAccumulatedDate})의 예측 데이터가 로드되지 않았습니다. 
                               다시 해당 날짜를 클릭해보세요.
                             </p>
                           </div>
@@ -3518,9 +3532,9 @@ const App = () => {
                       <div style={styles.card}>
                         <h2 style={styles.cardTitle}>
                           <Award size={18} style={styles.iconStyle} />
-                          선택 날짜 구매 의사결정 구간
+                          예측 시작일 구매 의사결정 구간
                           <span style={{ ...typography.small, color: '#6b7280', marginLeft: '0.5rem' }}>
-                            ({selectedAccumulatedDate || '없음'} 기준)
+                            ({calculatePredictionStartDate(selectedAccumulatedDate) || '없음'} 기준)
                             {selectedDateIntervalScores?.length > 0 && (
                               <span style={{ color: '#10b981' }}>
                                 - 첫 구간: {selectedDateIntervalScores[0]?.avg_price?.toFixed(2) || 'N/A'}
@@ -3536,7 +3550,7 @@ const App = () => {
                             marginBottom: '1rem'
                           }}>
                             <p style={{ ...typography.helper, margin: 0, color: '#92400e' }}>
-                              📋 {selectedAccumulatedDate} 날짜의 구간 점수 데이터가 로드되지 않았습니다. 
+                              📋 예측 시작일 {calculatePredictionStartDate(selectedAccumulatedDate)} (데이터 기준일: {selectedAccumulatedDate})의 구간 점수 데이터가 로드되지 않았습니다. 
                               다시 해당 날짜를 클릭해보세요.
                             </p>
                           </div>
