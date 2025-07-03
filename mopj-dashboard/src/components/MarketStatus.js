@@ -423,7 +423,29 @@ const MarketStatus = ({ fileInfo, windowWidth }) => {
       </div>
 
       {/* 카테고리별 데이터 */}
-      {Object.entries(marketData.categories || {}).map(([category, categoryData]) => (
+      {(() => {
+        // 우선순위 카테고리 정렬 (원유 가격, 나프타 가격을 상단으로)
+        const categories = Object.entries(marketData.categories || {});
+        const priorityOrder = ['원유 가격', '나프타 가격'];
+        
+        const sortedCategories = categories.sort(([categoryA], [categoryB]) => {
+          const indexA = priorityOrder.indexOf(categoryA);
+          const indexB = priorityOrder.indexOf(categoryB);
+          
+          // 둘 다 우선순위에 있으면 우선순위 순서대로
+          if (indexA !== -1 && indexB !== -1) {
+            return indexA - indexB;
+          }
+          // A만 우선순위에 있으면 A가 앞으로
+          if (indexA !== -1) return -1;
+          // B만 우선순위에 있으면 B가 앞으로
+          if (indexB !== -1) return 1;
+          // 둘 다 우선순위에 없으면 원래 순서 유지
+          return 0;
+        });
+        
+        return sortedCategories;
+      })().map(([category, categoryData]) => (
         <div key={category} style={styles.categoryCard}>
           <div 
             style={styles.categoryHeader}
