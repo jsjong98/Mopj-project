@@ -2124,6 +2124,79 @@ def load_data_with_xlwings(file_path, model_type=None):
         except:
             pass
 
+def load_csv_with_xlwings(csv_path):
+    """
+    xlwings를 사용하여 CSV 파일을 읽는 함수 - 보안프로그램 우회
+    
+    Args:
+        csv_path (str): CSV 파일 경로
+    
+    Returns:
+        pd.DataFrame: CSV 데이터프레임
+    """
+    if not XLWINGS_AVAILABLE:
+        raise ImportError("xlwings is not available for CSV loading")
+    
+    logger.info(f"🔓 [XLWINGS_CSV] Loading CSV file with security bypass: {os.path.basename(csv_path)}")
+    
+    app = None
+    wb = None
+    
+    try:
+        # Excel 애플리케이션을 백그라운드에서 시작
+        app = xw.App(visible=False, add_book=False)
+        app.display_alerts = False
+        app.screen_updating = False
+        
+        logger.info(f"📱 [XLWINGS_CSV] Excel app started for CSV")
+        
+        # CSV 파일을 Excel로 열기 (CSV는 자동으로 파싱됨)
+        wb = app.books.open(csv_path, read_only=True, update_links=False)
+        logger.info(f"📖 [XLWINGS_CSV] CSV workbook opened: {wb.name}")
+        
+        # 첫 번째 시트 사용 (CSV는 항상 하나의 시트만 가짐)
+        sheet = wb.sheets[0]
+        
+        # 사용된 범위 확인
+        used_range = sheet.used_range
+        if used_range is None:
+            raise ValueError("CSV file appears to be empty")
+        
+        logger.info(f"📏 [XLWINGS_CSV] Used range: {used_range.address}")
+        
+        # 데이터를 DataFrame으로 읽기 (헤더 포함)
+        df = sheet['A1'].options(pd.DataFrame, index=False, expand='table').value
+        
+        logger.info(f"📊 [XLWINGS_CSV] CSV data loaded: {df.shape}")
+        logger.info(f"📋 [XLWINGS_CSV] Columns: {list(df.columns)}")
+        
+        # 데이터 검증
+        if df is None or df.empty:
+            raise ValueError("No data found in the CSV file")
+        
+        logger.info(f"✅ [XLWINGS_CSV] CSV loaded successfully: {df.shape}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ [XLWINGS_CSV] Error loading CSV file: {str(e)}")
+        raise e
+        
+    finally:
+        # 리소스 정리
+        try:
+            if wb is not None:
+                wb.close()
+                logger.info("📖 [XLWINGS_CSV] CSV workbook closed")
+        except:
+            pass
+        
+        try:
+            if app is not None:
+                app.quit()
+                logger.info("📱 [XLWINGS_CSV] Excel app closed")
+        except:
+            pass
+
 def load_data_safe_holidays(file_path):
     """
     휴일 파일 전용 xlwings 로딩 함수 - 보안프로그램 우회
@@ -2279,8 +2352,18 @@ def load_data(file_path, model_type=None, use_cache=True):
     
     # 파일 확장자에 따라 다른 로드 방법 사용
     if file_path.endswith('.csv'):
-        logger.info("Loading CSV file with standard processing")
-        df = pd.read_csv(file_path)
+        logger.info("Loading CSV file with xlwings fallback support")
+        # CSV 파일도 xlwings 우선 시도
+        try:
+            if XLWINGS_AVAILABLE:
+                logger.info(f"🔓 [XLWINGS_CSV] Attempting to load CSV with xlwings: {file_path}")
+                df = load_csv_with_xlwings(file_path)
+            else:
+                df = pd.read_csv(file_path)
+        except Exception as e:
+            logger.warning(f"⚠️ [XLWINGS_CSV] xlwings failed, falling back to pandas: {str(e)}")
+            df = pd.read_csv(file_path)
+        
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
         
@@ -3994,8 +4077,16 @@ def load_prediction_simple(prediction_start_date):
         if not csv_filepath.exists() or not meta_filepath.exists():
             return {'success': False, 'error': f'Prediction files not found for {start_date.strftime("%Y-%m-%d")}'}
         
-        # CSV 로드
-        predictions_df = pd.read_csv(csv_filepath)
+        # CSV 로드 - xlwings 우선 시도
+        try:
+            if XLWINGS_AVAILABLE:
+                logger.info(f"🔓 [XLWINGS_CSV] Attempting to load CSV with xlwings: {csv_filepath}")
+                predictions_df = load_csv_with_xlwings(csv_filepath)
+            else:
+                predictions_df = pd.read_csv(csv_filepath)
+        except Exception as e:
+            logger.warning(f"⚠️ [XLWINGS_CSV] xlwings failed, falling back to pandas: {str(e)}")
+            predictions_df = pd.read_csv(csv_filepath)
         predictions_df['Date'] = pd.to_datetime(predictions_df['Date'])
         if 'Prediction_From' in predictions_df.columns:
             predictions_df['Prediction_From'] = pd.to_datetime(predictions_df['Prediction_From'])
@@ -4169,6 +4260,72 @@ def rebuild_predictions_index_from_existing_files():
         logger.error(traceback.format_exc())
         return False
 
+def update_cached_prediction_actual_values(prediction_start_date, update_latest_only=True):
+    """
+    캐시된 예측의 실제값만 선택적으로 업데이트하는 최적화된 함수
+    
+    Args:
+        prediction_start_date: 예측 시작 날짜
+        update_latest_only: True면 최신 데이터만 체크하여 성능 최적화
+    
+    Returns:
+        dict: 업데이트 결과
+    """
+    try:
+        current_file = prediction_state.get('current_file')
+        if not current_file:
+            return {'success': False, 'error': 'No current file context available'}
+        
+        # 캐시된 예측 로드 (실제값 업데이트 없이)
+        cached_result = load_prediction_with_attention_from_csv(prediction_start_date)
+        if not cached_result['success']:
+            return cached_result
+        
+        predictions = cached_result['predictions']
+        
+        # 데이터 로드 (캐시 활용)
+        logger.info(f"🔄 [ACTUAL_UPDATE] Loading data for actual value update...")
+        df = load_data(current_file, use_cache=True)
+        
+        if df is None or df.empty:
+            logger.warning(f"⚠️ [ACTUAL_UPDATE] Could not load data file")
+            return {'success': False, 'error': 'Could not load data file'}
+        
+        last_data_date = df.index.max()
+        updated_count = 0
+        
+        # 각 예측에 대해 실제값 확인 및 설정
+        for pred in predictions:
+            pred_date = pd.to_datetime(pred['Date'])
+            
+            # 최신 데이터만 체크하는 경우 성능 최적화
+            if update_latest_only and pred_date < last_data_date - pd.Timedelta(days=30):
+                continue
+            
+            # 실제 데이터가 존재하는 날짜면 실제값 설정
+            if (pred_date in df.index and 
+                pd.notna(df.loc[pred_date, 'MOPJ']) and 
+                pred_date <= last_data_date):
+                actual_val = float(df.loc[pred_date, 'MOPJ'])
+                pred['Actual'] = actual_val
+                updated_count += 1
+                logger.debug(f"  📊 Updated actual value for {pred_date.strftime('%Y-%m-%d')}: {actual_val:.2f}")
+            elif 'Actual' not in pred or pred['Actual'] is None:
+                pred['Actual'] = None
+        
+        logger.info(f"✅ [ACTUAL_UPDATE] Updated {updated_count} actual values")
+        
+        # 업데이트된 결과 반환
+        cached_result['predictions'] = predictions
+        cached_result['actual_values_updated'] = True
+        cached_result['updated_count'] = updated_count
+        
+        return cached_result
+        
+    except Exception as e:
+        logger.error(f"❌ [ACTUAL_UPDATE] Error updating actual values: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
 def load_prediction_from_csv(prediction_start_date_or_data_end_date):
     """
     하위 호환성을 위한 함수 - 자동으로 새로운 함수로 리다이렉트
@@ -4201,8 +4358,16 @@ def load_prediction_with_attention_from_csv_in_dir(prediction_start_date, file_p
             logger.warning(f"  ❌ Required files missing in {file_predictions_dir.name}")
             return {'success': False, 'error': f'Prediction files not found for {start_date.strftime("%Y-%m-%d")}'}
         
-        # CSV 로드
-        predictions_df = pd.read_csv(csv_filepath)
+        # CSV 로드 - xlwings 우선 시도
+        try:
+            if XLWINGS_AVAILABLE:
+                logger.info(f"🔓 [XLWINGS_CSV] Attempting to load CSV with xlwings: {csv_filepath}")
+                predictions_df = load_csv_with_xlwings(csv_filepath)
+            else:
+                predictions_df = pd.read_csv(csv_filepath)
+        except Exception as e:
+            logger.warning(f"⚠️ [XLWINGS_CSV] xlwings failed, falling back to pandas: {str(e)}")
+            predictions_df = pd.read_csv(csv_filepath)
         
         # 🔧 컬럼명 호환성 처리: 소문자로 저장된 컬럼을 대문자로 변환
         if 'date' in predictions_df.columns:
@@ -4233,38 +4398,11 @@ def load_prediction_with_attention_from_csv_in_dir(prediction_start_date, file_p
                 elif hasattr(value, 'item'):  # numpy scalars
                     pred[key] = value.item()
         
-        # ✅ 캐시에서 로드할 때 실제값 다시 설정 (현재 파일 데이터 사용)
-        try:
-            current_file = prediction_state.get('current_file')
-            if current_file:
-                df = load_data(current_file)
-                if df is not None and not df.empty:
-                    last_data_date = df.index.max()
-                    updated_count = 0
-                    
-                    # 각 예측에 대해 실제값 확인 및 설정
-                    for pred in predictions:
-                        pred_date = pd.to_datetime(pred['Date'])
-                        
-                        # 실제 데이터가 존재하는 날짜면 실제값 설정
-                        if (pred_date in df.index and 
-                            pd.notna(df.loc[pred_date, 'MOPJ']) and 
-                            pred_date <= last_data_date):
-                            actual_val = float(df.loc[pred_date, 'MOPJ'])
-                            pred['Actual'] = actual_val
-                            updated_count += 1
-                            logger.debug(f"  📊 Set actual value for {pred_date.strftime('%Y-%m-%d')}: {actual_val:.2f}")
-                        elif 'Actual' not in pred or pred['Actual'] is None:
-                            pred['Actual'] = None
-                    
-                    if updated_count > 0:
-                        logger.info(f"  🔄 Updated {updated_count} actual values from current data file")
-                else:
-                    logger.warning(f"  ⚠️  Could not load current data file for actual values")
-            else:
-                logger.warning(f"  ⚠️  No current file set for actual value update")
-        except Exception as e:
-            logger.warning(f"  ⚠️  Error updating actual values: {str(e)}")
+        # ✅ 캐시에서 로드할 때 실제값 다시 설정 (선택적 - 성능 최적화)
+        # 💡 캐시된 예측을 빠르게 불러오기 위해 실제값 업데이트를 스킵
+        # 필요시에만 별도 API로 실제값 업데이트 수행
+        logger.info(f"📦 [CACHE_FAST] Skipping actual value update for faster cache loading")
+        logger.info(f"💡 [CACHE_FAST] Use separate API endpoint if actual value update is needed")
         
         # 메타데이터 로드
         with open(meta_filepath, 'r', encoding='utf-8') as f:
@@ -4346,8 +4484,16 @@ def load_prediction_with_attention_from_csv(prediction_start_date):
                 'error': f'Prediction files not found for start date {start_date.strftime("%Y-%m-%d")}'
             }
         
-        # CSV 파일 읽기
-        predictions_df = pd.read_csv(csv_filepath)
+        # CSV 파일 읽기 - xlwings 우선 시도
+        try:
+            if XLWINGS_AVAILABLE:
+                logger.info(f"🔓 [XLWINGS_CSV] Attempting to load CSV with xlwings: {csv_filepath}")
+                predictions_df = load_csv_with_xlwings(csv_filepath)
+            else:
+                predictions_df = pd.read_csv(csv_filepath)
+        except Exception as e:
+            logger.warning(f"⚠️ [XLWINGS_CSV] xlwings failed, falling back to pandas: {str(e)}")
+            predictions_df = pd.read_csv(csv_filepath)
         
         # 🔧 컬럼명 호환성 처리: 소문자로 저장된 컬럼을 대문자로 변환
         if 'date' in predictions_df.columns:
@@ -4378,37 +4524,11 @@ def load_prediction_with_attention_from_csv(prediction_start_date):
                 elif hasattr(value, 'item'):  # numpy scalars
                     pred[key] = value.item()
         
-        # ✅ 캐시에서 로드할 때 실제값 다시 설정 (현재 파일 데이터 사용)
-        try:
-            if current_file:
-                df = load_data(current_file)
-                if df is not None and not df.empty:
-                    last_data_date = df.index.max()
-                    updated_count = 0
-                    
-                    # 각 예측에 대해 실제값 확인 및 설정
-                    for pred in predictions:
-                        pred_date = pd.to_datetime(pred['Date'])
-                        
-                        # 실제 데이터가 존재하는 날짜면 실제값 설정
-                        if (pred_date in df.index and 
-                            pd.notna(df.loc[pred_date, 'MOPJ']) and 
-                            pred_date <= last_data_date):
-                            actual_val = float(df.loc[pred_date, 'MOPJ'])
-                            pred['Actual'] = actual_val
-                            updated_count += 1
-                            logger.debug(f"  📊 Set actual value for {pred_date.strftime('%Y-%m-%d')}: {actual_val:.2f}")
-                        elif 'Actual' not in pred or pred['Actual'] is None:
-                            pred['Actual'] = None
-                    
-                    if updated_count > 0:
-                        logger.info(f"  🔄 Updated {updated_count} actual values from current data file")
-                else:
-                    logger.warning(f"  ⚠️  Could not load current data file for actual values")
-            else:
-                logger.warning(f"  ⚠️  No current file set for actual value update")
-        except Exception as e:
-            logger.warning(f"  ⚠️  Error updating actual values: {str(e)}")
+        # ✅ 캐시에서 로드할 때 실제값 다시 설정 (선택적 - 성능 최적화)
+        # 💡 캐시된 예측을 빠르게 불러오기 위해 실제값 업데이트를 스킵
+        # 필요시에만 별도 API로 실제값 업데이트 수행
+        logger.info(f"📦 [CACHE_FAST] Skipping actual value update for faster cache loading")
+        logger.info(f"💡 [CACHE_FAST] Use separate API endpoint if actual value update is needed")
         
         # 메타데이터 읽기
         with open(meta_filepath, 'r', encoding='utf-8') as f:
@@ -10210,6 +10330,36 @@ def delete_saved_prediction_api(date):
             return jsonify({'error': result['error']}), 500
     except Exception as e:
         logger.error(f"Error deleting saved prediction: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/predictions/saved/<date>/update-actual', methods=['POST'])
+def update_prediction_actual_values_api(date):
+    """캐시된 예측의 실제값만 업데이트하는 API - 성능 최적화"""
+    try:
+        # 요청 파라미터
+        data = request.json or {}
+        update_latest_only = data.get('update_latest_only', True)
+        
+        logger.info(f"🔄 [API] Updating actual values for prediction {date}")
+        logger.info(f"  📊 Update latest only: {update_latest_only}")
+        
+        # 실제값 업데이트 실행
+        result = update_cached_prediction_actual_values(date, update_latest_only)
+        
+        if result['success']:
+            logger.info(f"✅ [API] Successfully updated {result.get('updated_count', 0)} actual values")
+            return jsonify({
+                'success': True,
+                'updated_count': result.get('updated_count', 0),
+                'message': f'Updated {result.get("updated_count", 0)} actual values',
+                'predictions': result['predictions']
+            })
+        else:
+            logger.error(f"❌ [API] Failed to update actual values: {result.get('error')}")
+            return jsonify({'error': result['error']}), 500
+            
+    except Exception as e:
+        logger.error(f"❌ [API] Error updating actual values: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predictions/export', methods=['GET'])
