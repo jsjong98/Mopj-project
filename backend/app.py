@@ -6382,7 +6382,7 @@ def calculate_moving_averages_with_history(predictions, historical_data, target_
 # 2. 여러 날짜에 대한 누적 예측을 수행하는 함수 추가
 def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, save_to_csv=True, use_saved_data=True):
     """
-    시작 날짜부터 종료 날짜까지 각 날짜별로 예측을 수행하고 결과를 누적합니다. (수정됨)
+    시작 날짜부터 종료 날짜까지 각 날짜별로 예측을 수행하고 결과를 누적합니다. (최적화됨 - 데이터 한번만 로딩)
     """
     global prediction_state
 
@@ -6397,14 +6397,25 @@ def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, 
         prediction_state['prediction_dates'] = []
         prediction_state['accumulated_consistency_scores'] = {}
         prediction_state['current_file'] = file_path  # ✅ 현재 파일 경로 설정
+        prediction_state['latest_file_path'] = file_path  # 단일 예측과 호환성 유지
         
-        logger.info(f"Running accumulated predictions from {start_date} to {end_date}")
+        logger.info(f"🎯 [ACCUMULATED] Running accumulated predictions from {start_date} to {end_date}")
+        logger.info(f"  📁 Data file: {file_path}")
+        logger.info(f"  💾 Save to CSV: {save_to_csv}")
+        logger.info(f"  🔄 Use saved data: {use_saved_data}")
 
         # 입력 날짜를 datetime 객체로 변환
         if isinstance(start_date, str):
             start_date = pd.to_datetime(start_date)
         if end_date is not None and isinstance(end_date, str):
             end_date = pd.to_datetime(end_date)
+
+        # 🚀 데이터 로드 (누적 예측용 - LSTM 모델, 2022년 이전 데이터 제거) - 한 번만 수행!
+        logger.info("📂 [ACCUMULATED] Loading data once for all predictions...")
+        df = load_data(file_path, model_type='lstm')
+        prediction_state['current_data'] = df
+        prediction_state['prediction_progress'] = 8
+        logger.info(f"✅ [ACCUMULATED] Data loaded successfully: {df.shape} (from {df.index.min()} to {df.index.max()})")
 
         # 저장된 데이터 활용 옵션이 켜져 있으면 먼저 CSV에서 로드 시도
         loaded_predictions = []
@@ -6427,9 +6438,6 @@ def run_accumulated_predictions_with_save(file_path, start_date, end_date=None, 
             if len(loaded_predictions) > 0:
                 logger.info(f"💡 [CACHE] Using cached predictions will significantly speed up processing!")
 
-        # 데이터 로드 (누적 예측용 - LSTM 모델, 2022년 이전 데이터 제거)
-        df = load_data(file_path, model_type='lstm')
-        prediction_state['current_data'] = df
         prediction_state['prediction_progress'] = 10
 
         # 종료 날짜가 지정되지 않으면 데이터의 마지막 날짜 사용
@@ -8566,10 +8574,12 @@ class VARMAXSemiMonthlyForecaster:
             test_data = historical_data[-self.pred_days:]
             self.final_forecast_var.index = test_data.index
             self.mape_value = self.calculate_mape(self.final_forecast_var[self.result_var], test_data[self.result_var])
+            
+            return self.mape_value
 
         except Exception as e:
             logger.error(f"VARMAX variables generation failed: {str(e)}")
-            raise e
+            return None
 
     def generate_predictions_varmax(self, current_date, var_num):
         """VARMAX 예측 수행"""
@@ -12097,7 +12107,6 @@ def background_varmax_prediction(file_path, current_date, pred_days, use_cache=T
                 logger.info(f"🔍 [VARMAX_CACHE] Final verification - ma_results count: {len(prediction_state.get('varmax_ma_results', {}))}")
                 
                 # 🛡️ 상태 안정화를 위한 짧은 대기
-                import time
                 time.sleep(1.0)
                 
                 logger.info(f"🎯 [VARMAX_CACHE] Cache loading process completed for {current_date}")
@@ -12123,11 +12132,30 @@ def background_varmax_prediction(file_path, current_date, pred_days, use_cache=T
             prediction_state['varmax_prediction_progress'] = 30
 
             mape_list=[]
+            valid_indices = []
             for var_num in range(2,8):
                 mape_value = forecaster.generate_variables_varmax(current_date, var_num)
                 mape_list.append(mape_value)
-            min_index = mape_list.index(min(mape_list))
+                if mape_value is not None:
+                    valid_indices.append(var_num - 2)  # 인덱스 조정
+                logger.info(f"Var {var_num} model MAPE: {mape_value}")
+            
+            # None 값 필터링
+            valid_mape_values = [mape for mape in mape_list if mape is not None]
+            
+            if not valid_mape_values:
+                raise Exception("All VARMAX variable models failed to generate valid MAPE values")
+            
+            # 최소 MAPE 값의 인덱스 찾기
+            min_mape = min(valid_mape_values)
+            min_index = None
+            for i, mape in enumerate(mape_list):
+                if mape == min_mape:
+                    min_index = i
+                    break
+            
             logger.info(f"Var {min_index+2} model is selected, MAPE:{mape_list[min_index]}%")
+            logger.info(f"Valid models: {len(valid_mape_values)}/{len(mape_list)}")
             
             results = forecaster.generate_predictions_varmax(current_date, min_index+2)
             logger.info(f"✅ [VARMAX_NEW] Prediction generation completed successfully")
