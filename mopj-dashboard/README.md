@@ -278,6 +278,8 @@ npm run build
 ## 🐛 문제 해결
 
 ### 1. 패키지 설치 오류
+
+#### 일반적인 설치 오류
 ```bash
 # npm 캐시 정리
 npm cache clean --force
@@ -286,6 +288,47 @@ npm cache clean --force
 rm -rf node_modules package-lock.json
 npm install
 ```
+
+#### SSL 인증서 오류 (회사/기관 네트워크)
+회사나 학교 네트워크에서 `npm install` 실행 시 "self-signed certificate in certificate chain" 오류가 발생하는 경우:
+
+**방법 1: SSL 검증 비활성화 (권장)**
+```bash
+# SSL 검증 비활성화
+npm config set strict-ssl false
+
+# 캐시 정리 후 재설치
+npm cache clean --force
+npm install
+```
+
+**방법 2: 레지스트리 변경**
+```bash
+# HTTP 레지스트리 사용
+npm config set registry http://registry.npmjs.org/
+npm install
+
+# 또는 HTTPS 레지스트리로 복구
+npm config set registry https://registry.npmjs.org/
+```
+
+**방법 3: 환경변수 설정 (Windows)**
+```cmd
+set NODE_TLS_REJECT_UNAUTHORIZED=0
+npm install
+```
+
+**방법 4: .npmrc 파일 생성**
+프로젝트 루트에 `.npmrc` 파일을 생성하고 다음 내용 추가:
+```
+strict-ssl=false
+registry=https://registry.npmjs.org/
+```
+
+**주의사항**: 
+- `strict-ssl=false` 설정은 보안상 권장되지 않으므로 설치 완료 후 원복하세요
+- 설정 원복: `npm config set strict-ssl true`
+- 회사 네트워크에서는 네트워크 관리자에게 프록시 설정 문의
 
 ### 2. 프록시 연결 오류
 ```bash
