@@ -1,8 +1,22 @@
 // api.js
 import axios from 'axios';
 
-// 백엔드 URL - 프록시 사용
-const API_BASE_URL = '/api';
+// 백엔드 URL - 개발/배포 환경 대응
+const API_BASE_URL = (() => {
+  // 개발 환경에서 프록시 확인
+  if (process.env.NODE_ENV === 'development') {
+    // 현재 호스트가 localhost:3000인 경우 프록시 사용
+    if (window.location.host === 'localhost:3000') {
+      console.log('🔧 [API] Using proxy: /api → http://localhost:5000/api');
+      return '/api';
+    }
+    // 그 외의 경우 직접 연결
+    console.log('🔧 [API] Direct connection to backend');
+    return 'http://localhost:5000/api';
+  }
+  // 프로덕션 환경
+  return process.env.REACT_APP_API_URL || '/api';
+})();
 
 // API 클라이언트 생성
 const apiClient = axios.create({
