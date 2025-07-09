@@ -28,6 +28,7 @@ colorama==0.4.6
 # 파일 처리
 openpyxl==3.1.2
 xlrd==2.0.1
+xlwings==0.30.10
 
 # 보안 및 환경 관리
 python-dotenv==1.0.0
